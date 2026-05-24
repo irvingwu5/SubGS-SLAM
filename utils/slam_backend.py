@@ -816,6 +816,13 @@ class BackEnd(mp.Process):
                 selected.append(self.rskm_rng.choice(active_kf_ids))
             elif current_kf_id is not None:
                 selected.append(current_kf_id)
+
+        # Increment replay counts for all selected frames
+        for kf_id in selected:
+            if kf_id in self.viewpoints:
+                vp = self.viewpoints[kf_id]
+                vp.rskm_replay_count = getattr(vp, "rskm_replay_count", 0) + 1
+
         return selected
 
     # ========================================================================
@@ -892,6 +899,7 @@ class BackEnd(mp.Process):
                 vp = self.viewpoints[kf_id]
                 vp.par_replay_count = getattr(vp, "par_replay_count", 0) + 1
                 vp.par_last_replay_iter = self.iteration_count
+                vp.rskm_replay_count = getattr(vp, "rskm_replay_count", 0) + 1
 
         # Step 5: Accumulate stats and periodic log
         self._par_rskm_log_counter += 1
@@ -1263,6 +1271,19 @@ class BackEnd(mp.Process):
                     save_dir = self.config["Results"]["save_dir"]
                     submaps_dir = os.path.join(save_dir, "submaps")
                     os.makedirs(submaps_dir, exist_ok=True)
+
+                    # Save RSKM replay counts for trajectory visualization
+                    replay_counts = {}
+                    for kf_id, vp in self.viewpoints.items():
+                        cnt = getattr(vp, "rskm_replay_count", 0)
+                        if cnt > 0:
+                            replay_counts[int(kf_id)] = int(cnt)
+                    if replay_counts:
+                        import json as _json
+                        replay_path = os.path.join(save_dir, "rskm_replay_counts.json")
+                        with open(replay_path, "w") as _f:
+                            _json.dump(replay_counts, _f)
+                        Log(f"Saved RSKM replay counts ({len(replay_counts)} KFs) to {replay_path}")
 
                     gaussian_params = self.gaussians.capture_dict()
                     submap_keyframes = sorted(list(self.viewpoints.keys()))

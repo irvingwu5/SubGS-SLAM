@@ -1,4 +1,4 @@
-# Round C: B + RSKM — 子图内随机关键帧重放
+# Round C: B + parRSKM — 随机关键帧重放
 inherit_from: "configs/rgbd/replica/base_config.yaml"
 
 Dataset:

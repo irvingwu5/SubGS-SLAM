@@ -14,7 +14,7 @@ Ablation:
 
 VOPrior:
   type: simple_rgbd_odom
-  tracking_refine_iters: 60
+  tracking_refine_iters: 100
 
 Training:
   use_rskm: False

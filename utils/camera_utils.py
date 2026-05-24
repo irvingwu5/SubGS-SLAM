@@ -78,8 +78,9 @@ class Camera(nn.Module):
         self.par_pose_rot_error_deg = None  # float, VO vs render rotation error (deg)
         self.par_tracking_loss = None       # float, best_loss from tracking refinement
         self.par_reliability = None         # float, r_i = exp(-beta * pose_error)
-        self.par_replay_count = 0           # int, times selected for replay
+        self.par_replay_count = 0           # int, times selected for PAR replay
         self.par_last_replay_iter = -1      # int, last mapping iteration when replayed
+        self.rskm_replay_count = 0          # int, times selected for RSKM replay (vanilla & PAR)
         self.par_initialized = False        # bool, whether PAR metadata has been computed
         # 兼容处理：如果未提供动态内参，则根据传入的静态参数构造一个 3x3 矩阵
         # 防止下游 SLAM 跟踪线程调用 self.dynamic_intrinsic 时引发 NoneType 错误

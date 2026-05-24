@@ -1,6 +1,6 @@
-# FVO-GS-SLAM: FFT Edge VO Guided RGBD 2D Gaussian Splatting SLAM
+# FVO-GS-SLAM: RGBD 2D Gaussian Splatting SLAM with VO Prior
 
-FVO-GS-SLAM is an RGBD SLAM system based on 2D Gaussian Splatting and differentiable surfel rendering. The system uses dense FFT Edge VO (EAGS-SLAM style DT alignment + LM optimization) for tracking initialization, render-based pose refinement, RGB/depth/normal joint Gaussian-only mapping, motion-based submap management, CosPlace retrieval + Reloc3R keyframe pair estimation + RGB-D depth verification + keyframe-level PGO, and streaming global Gaussian fusion.
+FVO-GS-SLAM is an RGBD SLAM system based on 2D Gaussian Splatting and differentiable surfel rendering. The paper system uses Simple RGBD Odometry as VO prior for tracking initialization, render-based pose refinement with three depth supervision sources (expected depth, median depth, surfel-aware depth), FFT frequency-aware Gaussian seeding, error-mask guided dynamic point insertion, and RSKM random keyframe replay for mapping.
 
 The maintained direction is RGBD indoor SLAM on TUM RGBD, Replica, and ScanNet++ datasets.
 
@@ -14,188 +14,173 @@ The maintained direction is RGBD indoor SLAM on TUM RGBD, Replica, and ScanNet++
 
 ## Statement
 
-This repository is developed from the MonoGS style Gaussian SLAM framework and has been extended into an RGBD 2D Gaussian SLAM system with FFT Edge VO guided tracking initialization, motion-based submap management, and submap-level global consistency handling.
+This repository is developed from the MonoGS style Gaussian SLAM framework. The **paper system** includes:
 
-The current system includes:
+**Core paper modules:**
 
-- RGBD dataset loading (TUM, Replica, ScanNet++, Realsense live)
-- FFT high-frequency mask generation (CLAHE → FFT → Gaussian HPF → IFFT → threshold)
-- FFT Edge VO: dense DT alignment + damped Gauss-Newton (EAGS-SLAM / Edge VO style)
-- Render-based pose refinement (RGB + depth tracking loss)
-- Keyframe selection and sliding window management
-- Asynchronous back end Gaussian-only mapping (RGB + depth + normal)
+- RGBD dataset loading (TUM, Replica, ScanNet++)
+- **VOPrior**: Simple RGBD Odometry (ORB + RANSAC PnP) as tracking prior, frame-to-frame delta alignment
+- **Candidate Selection**: {previous, constant_velocity, external_vo} → render precheck → best initial pose
+- Render-based pose refinement (RGB + depth tracking loss, Adam on SE(3) delta)
+- **FFT high-frequency mask** (CLAHE → FFT → Gaussian HPF → IFFT → triangle threshold)
+  - `use_freq_sampling_density`: frequency-aware sampling (dense in high-freq, sparse in low-freq)
+  - Initial scale control via `low_freq_scale_multiplier`
+- **Error mask** guided dynamic point insertion (alpha holes + depth penetration + RGB error)
+  - `use_rgb_error_mask` synchronized with `use_error_mask`
+- **Three depth supervision sources**:
+  - Expected depth (alpha-composited `Σw_i·d_i/Σw_i`)
+  - Median depth (alpha > 0.5 first-hit depth)
+  - Surfel-Aware (SA) depth (confidence-weighted expected depth, reduces aliasing at occlusion boundaries)
+- **Depth distortion loss** (`use_dist`): compacts Gaussian depth distribution along rays
 - 2D Gaussian map representation with differentiable surfel rendering
-- Surface-aware (SA) depth rendering: confidence-weighted expected depth reduces depth aliasing at occlusion boundaries
-- Finite difference normal (FDN) supervision
 - Gaussian densification, opacity reset, and pruning
+- **RSKM** (Random Sampling Keyframe Mapping): random keyframe replay for balanced mapping
+- **Color refinement**: always-on RGB parameter optimization
+- Keyframe selection and sliding window management
 - Visibility maintenance with `occ_aware_visibility`
-- Motion-based submap cutting (translation/rotation threshold relative to submap anchor)
-- Independent submap initialization from seed frames
-- Submap checkpoint saving (Gaussian params, keyframe poses, seed global C2W, relative/correct tsfm)
-- RSKM (Random Sampling Keyframe Mapping): random keyframe replay within active submap
-- Gaussian Inheritance: RAP2DGS-scored top-45% old Gaussians inherited as active initial state
-- RAP2DGS Lite: lightweight rule-based scoring for inheritance selection (KNN + 6 geometric features)
-- Error-mask hole seeding for new submap areas not covered by inherited Gaussians
-- CosPlace visual descriptor extraction from saved keyframe images
-- Keyframe-level loop candidate retrieval (cross-submap pair selection)
-- Reloc3R (DUSt3R variant) keyframe pair coarse relative pose estimation
-- RGB-D depth geometric verification with log-spaced scale search
-- Keyframe-level pose graph construction (temporal/inheritance/loop edges)
-- Keyframe PGO trial + safety evaluation (Open3D LM, correction/residual gates)
-- Per-keyframe trajectory correction + submap-median Gaussian correction
-- Streaming submap loading and global Gaussian concatenation
-- `rigid_transform_2dgs` for applying correction transforms to 2DGS params
 - ATE trajectory evaluation and rendering quality evaluation
-- Optional GUI visualization
 - Ablation switches for controlled experiments
-- GPU memory monitoring (peak minus baseline)
+- GPU memory monitoring
+
+**Modules NOT in the paper** (exist in codebase for compatibility but disabled/not described):
+- FFT Edge VO (replaced by VOPrior)
+- Submap strategy + Gaussian Inheritance + RAP2DGS Lite
+- FDN normal supervision (`use_fdn`)
+- Loop closure + PGO + Reloc3R + depth geometric verification
 
 ---
 
-## Main Differences from MonoGS
+## Main Technical Components (Paper)
 
-### 1. RGBD oriented 2D Gaussian SLAM pipeline
+### 1. RGBD 2D Gaussian SLAM Pipeline
 
-The system uses RGBD observations to initialize, track, and optimize a 2D Gaussian map. The renderer outputs RGB, depth, opacity, visibility, radii, normal, and `n_touched`. These outputs feed tracking loss, mapping loss, visibility update, densification, pruning, evaluation, and global fusion.
+The system uses RGBD observations to initialize, track, and optimize a 2D Gaussian map. The differentiable surfel renderer outputs RGB, depth (expected/median/SA), opacity, visibility, radii, normal, and `n_touched`. These feed tracking loss, mapping loss, visibility update, densification, and pruning.
 
-### 2. FFT Edge VO for tracking initialization
+### 2. VOPrior: Simple RGBD Odometry for Tracking Initialization
 
-The project adds a dense FFT Edge VO module (`utils/fft_edge_vo.py`), aligned with EAGS-SLAM's Edge VO design:
+`utils/rgbd_vo_prior/__init__.py` wraps upstream Simple-RGBD-Odometry (C++ pybind accelerated) as a tracking prior provider.
 
-- **cur→ref direction**: current-frame 3D points projected into reference-frame distance-transform pyramid.
-- Reference DT + Sobel gradients are built once in `set_reference()` and reused for subsequent frames.
-- Per-frame optimization: damped Gauss-Newton (LM-style) with analytic SE(3) Jacobian.
-- Coarse-to-fine pyramid optimization with configurable levels and iteration budgets.
-- The initial guess (`init_c2w`) is properly seeded into the optimizer via `_se3_log(T_rc_init)`.
-
-FFTEdgeVO provides the tracking initial pose but does not replace differentiable render-based refinement.
-
-### 3. Front end tracking and keyframe management
-
-The front end is the main process, responsible for camera tracking, keyframe insertion, sliding window maintenance, visibility synchronization, submap cut decisions, and communication with the back end.
+- **Frame-to-frame delta alignment**: `est_c2w = init_c2w @ delta`, where `delta = inv(VO_prev) @ VO_curr`. This prevents VO drift accumulation — each frame starts from the last refined pose.
+- **Quality gates**: min valid keypoints (80), min inliers (20), min inlier ratio (0.15), max motion translation (0.50m), max rotation (30°).
+- **Candidate Selection** (Stage 2): builds candidates from {previous, constant_velocity, external_vo}, runs lightweight render precheck on each, selects best by combined loss.
+- VOPrior provides the initial pose but does NOT replace differentiable render-based refinement.
 
 Tracking flow per frame:
-1. FFT mask generation for the current frame
-2. FFTEdgeVO.track() → initial pose from dense DT alignment
-3. Render-based pose refinement (Adam on `cam_rot_delta` / `cam_trans_delta`)
-4. Auto-refresh FFTEdgeVO reference when quality degrades
-5. Keyframe decision (overlap ratio + translation threshold)
-6. Submap motion monitoring and cut triggering
+1. VOPrior.track() → initial est_c2w from ORB + RANSAC PnP
+2. Candidate Selection → render precheck → best initial pose
+3. Render-based pose refinement (Adam on `cam_rot_delta` / `cam_trans_delta`, RGB + depth L1 loss)
+4. Keyframe decision (overlap ratio + translation threshold)
 
-### 4. Back end Gaussian-only local mapping
+### 3. FFT Frequency-Aware Gaussian Seeding
 
-The back end is an independent process that initializes and optimizes the 2D Gaussian map from keyframes. By default, `optimize_keyframe_pose` is `true` (EAGS-style: keyframe pose optimization enabled with pose sanity checks). `optimize_keyframe_exposure` is `false`.
+`utils/fft_filter.py` generates a high-frequency mask from RGB: CLAHE → FFT → Gaussian HPF → IFFT → triangle threshold → bool mask.
 
-Mapping includes:
-- RGB L1 + DSSIM loss
-- Depth L1 loss
-- FDN normal supervision (when enabled)
-- FFT frequency mask guided sampling and initial scale
-- Error mask guided dynamic point insertion (holes + depth penetration)
-- Periodic densify, opacity reset, and prune
+**Two roles in Gaussian seeding:**
 
-### 5. Surface-Aware Depth Rendering
+- **Frequency-aware sampling density** (`use_freq_sampling_density`): high-frequency regions sampled at stride 2 (dense), low-frequency at stride 4 (sparse). Texture-rich areas get more Gaussians.
+- **Initial scale control**: low-frequency Gaussians receive `low_freq_scale_multiplier` (1.05×) larger initial scale to compensate for sparser sampling.
 
-Porting GauS-SLAM's confidence-weighted expected depth into the differentiable surfel rasterizer. When `use_sa=true`, the CUDA forward kernel adjusts each splat's depth before alpha accumulation: if a splat's depth deviates from the current surface estimate (median depth), its depth is pulled toward the surface via a confidence factor $conf = \exp(-error^2 / 4\sigma^2)$. This reduces depth aliasing at occlusion boundaries where background splats would otherwise bias the alpha-composited expected depth.
+### 4. Error Mask Guided Dynamic Point Insertion
+
+In `utils/slam_backend.py:add_next_kf`, the system renders the current map into the new keyframe and detects under-rendered regions:
+
+- **Alpha mask**: `render_opacity < 0.98` (holes)
+- **Depth error mask**: `render_depth > gt_depth` & `depth_error > 10×median_error` (depth penetration)
+- **RGB error mask** (`use_rgb_error_mask`): `sum|gt_rgb - render_rgb| > rgb_error_th` (color mismatch)
+
+These three masks are OR-combined into `error_mask`, guiding new Gaussian insertion only in under-rendered regions.
+
+### 5. Three Depth Supervision Sources
+
+The CUDA forward rasterizer outputs three depth representations via `allmap`:
+
+| Depth Type | Source | Meaning |
+|---|---|---|
+| **Expected Depth** | `allmap[0] / allmap[1]` = `Σ(w_i·d_i) / Σw_i` | Alpha-composited weighted average depth |
+| **Median Depth** | `allmap[5]` | Depth at which accumulated alpha first exceeds 0.5 (first-hit surface) |
+| **SA Depth** | Confidence-weighted expected depth | Outlier splat depths pulled toward median surface before accumulation |
+
+**Surfel-Aware (SA) Depth**: When `use_sa=true`, the CUDA forward kernel adjusts each splat's depth before alpha accumulation. For each splat, deviation from the current median surface estimate is computed:
+
+```
+conf = exp(-(d_i - d_median)² / 4σ²)
+adjusted_depth = median_depth + conf × (d_i - d_median)
+```
+
+As `conf → 0` (far from surface), depth is pulled to `d_median`. As `conf → 1` (near surface), depth is unchanged. This reduces depth aliasing at occlusion boundaries.
+
+**Depth selection** in Python layer:
+```python
+if use_sa_depth:
+    surf_depth = render_depth_expected  # SA expected depth
+else:
+    surf_depth = (1-depth_ratio)*expected + depth_ratio*median  # mixed
+```
 
 Key design decisions:
-- **Preserve pose gradient**: SA backward correctly propagates gradients through the confidence-adjusted depth path while keeping `dL_dtau` (SE(3) pose Jacobian) intact.
-- **Dual-switch control**: `use_sa` (CUDA forward/backward) and `use_sa_depth` (Python depth selection for loss) are independently configurable for ablation.
-- **SA distortion (depth variance)**: When `use_sa=true`, CUDA forward outputs median-centered depth variance `Σ w_i·(d_i - d_median)²` as `allmap[6]` instead of original m-based distortion. Backward fixed with correct `∂(SA_var)/∂w_i = (d_i - d_median)²` gradient (previously leaked non-SA distortion gradient). Python `use_sa_dist` guard prevents untuned SA variance from entering loss.
-- **Zero overhead**: Confidence computation (4 FMA + 1 exp per splat) runs inside the existing CUDA kernel; measured FPS difference < 5%.
-- **Default off**: `use_sa: false, use_sa_depth: false` preserves exact baseline behavior.
+- **Preserve pose gradient**: SA backward correctly propagates gradients through the adjusted depth path.
+- **Dual-switch control**: `use_sa` (CUDA) and `use_sa_depth` (Python loss selection) independently configurable for ablation.
+- **SA distortion**: When `use_sa=true`, `allmap[6]` outputs SA depth variance `Σ w_i·(d_i-d_median)²` instead of standard m-based distortion.
+- **Zero overhead**: Confidence computation (4 FMA + 1 exp per splat) inside existing CUDA kernel; FPS difference < 5%.
 
-Ablation results (TUM fr3_office full sequence):
+Ablation results (TUM fr3_office):
 - SA depth alone (A1): ATE 0.02204m, Depth L1 0.1641m — **best trajectory**
-- SA depth + dist λ=0.01 (A4): ATE 0.02423m (+9.9%), Depth L1 0.1495m (-8.9%) — **trades trajectory for depth**
-- **SA dist vetoed**: depth improvement comes at the cost of trajectory accuracy (veto condition V2). SA depth adjustment alone provides the surface-awareness benefit without over-compaction.
+- SA depth + dist λ=0.01 (A4): ATE 0.02423m, Depth L1 0.1495m — depth improves but trajectory degrades
+- **SA dist vetoed**: use_sa_dist=false recommended
 
-```yaml
-pipeline_params:
-  use_sa: false           # CUDA SA depth adjustment
-  use_sa_depth: false     # use SA expected depth in loss
-  depth_eps: 1.0e-6       # safe division epsilon
-  debug_sa_depth: false   # output debug fields
-opt_params:
-  use_sa_dist: false      # guard: enable SA variance in loss only when explicitly set
-  lambda_dist: 0.0        # distortion loss weight (0=off)
+### 6. Depth Distortion Loss (`use_dist`)
+
+`utils/slam_utils.py:get_loss_mapping_rgbd` — compacts Gaussian depth distribution along each pixel ray:
+
+- **`use_sa=false`**: standard 2DGS distortion `Σ w_i·(d_i - D)²` (m-based, around mean depth)
+- **`use_sa=true`**: SA variance `Σ w_i·(d_i - d_median)²` (around median surface)
+
+```python
+if lambda_dist > 0:
+    dist_loss = lambda_dist * rend_dist[rgb_pixel_mask].mean()
+    loss += dist_loss
 ```
 
-For detailed theory and ablation results, see `docs/experiments/surface_aware_depth_rendering_technical_report.md`.
+### 7. RSKM: Random Sampling Keyframe Mapping
 
-### 6. Submap based SLAM
+`utils/slam_backend.py:_select_rskm_keyframes` — during mapping, supervision frames are randomly sampled from the active keyframe pool instead of just the sliding window. Every `rskm_current_frame_interval` (4) samples, one is forced to be the current frame; the rest are uniformly random from all active keyframes.
 
-Motion-based submap cutting: a new submap starts when current camera motion relative to the submap anchor exceeds the configured translation or rotation threshold. Each submap is an independent memory and optimization partition.
+This prevents the most recent keyframes from dominating Gaussian optimization, improving rendering quality from older viewpoints. (Reference: GS3SLAM)
 
-Submap checkpoint fields:
-- `gaussian_params` — `capture_dict()` output
-- `submap_keyframes` — sorted keyframe indices
-- `seed_global_c2w` — seed frame global C2W
-- `submap_keyframe_poses` — all keyframe C2W poses
-- `relative_pose` — previous submap seed → current submap seed
-- `correct_tsfm` — loop closure / PGO correction (default identity)
+### 8. Back End Gaussian-Only Mapping
 
-On submap cut, the back end RAP2DGS-scores all old Gaussians and inherits the top 45% as the new submap's active initial state (Gaussian Inheritance), eliminating the cold-start coverage gap. The inherited Gaussians are re-optimizable and receive σ=1mm noise to break systematic biases.
+The back end is an independent process. Mapping includes:
+- RGB L1 + DSSIM loss (always on → color refinement)
+- Depth L1 loss (using selected depth source)
+- Depth distortion loss (`lambda_dist > 0` when enabled)
+- FFT frequency mask guided sampling density + initial scale
+- Error mask guided dynamic point insertion
+- Periodic densify, opacity reset, and prune
+- `occ_aware_visibility` per keyframe
+- RSKM random keyframe replay supervision
+- Backend pose policy: `optimize_keyframe_pose=true`, `optimize_keyframe_exposure=false`
 
-### 7. Loop closure and PGO
+### 9. Color Refinement
 
-The loop closure process runs as an independent process:
+Color refinement is always on — the back end continuously optimizes `_features_dc` and `_features_rest` (spherical harmonics coefficients) via RGB L1 + DSSIM loss in every mapping iteration. No explicit switch needed; it is inherent to the Gaussian optimization pipeline.
 
-1. **Visual retrieval**: Extract CosPlace descriptors (ResNet18 backbone + GeM pooling, weights loaded from disk) from saved keyframe images. Adaptive threshold from self-similarity. **Stage 2**: keyframe-level retrieval produces keyframe pair candidates (not submap pairs).
-2. **Reloc3R keyframe pair estimation** (Stage 3): DUSt3R-variant coarse relative pose for each keyframe pair. Raw translation preserved; scale search delegated to depth verification.
-3. **RGB-D depth geometric verification** (Stage 4): Back-project source depth, transform with Reloc3R pose, project to target, compare depth. Log-spaced scale search (0.1-20×) to find optimal scale. Filters pairs by overlap, depth RMSE, and inlier ratio.
-4. **Refinement → VerifiedLoopEdge** (Stage 5): Delta gates (vs odometry, final depth RMSE). Produces `VerifiedLoopEdge` with `accepted_for_pgo` decision.
-5. **Keyframe pose graph construction** (Stage 6): Nodes = keyframe global C2W (not submap seeds). Edges = temporal (adjacent KFs), inheritance (cross-submap boundary), loop (verified closures).
-6. **Keyframe PGO trial + safety evaluation** (Stage 7): Open3D `GlobalOptimizationLevenbergMarquardt` on keyframe graph. Safety gates: max correction t/r, odom residual increase ratio, loop residual decrease ratio, robust edge pruning (max 2 retries). Trial runs in memory only; does NOT write to ckpt by default.
-7. **Trajectory correction** (Stage 8): Accepted PGO → apply per-keyframe corrections (keyframes use optimized_c2w, non-keyframes use nearest-KF correction). Left-multiply: `corrected_c2w = delta @ original_c2w`.
-8. **Gaussian correction** (Stage 9): Per-submap median correction from keyframe corrections. Chordal-mean rotation, element-wise median translation.
+---
 
-**LoopClosure mode control** (Stage 0):
-- `off`: loop closure process idles
-- `detect_only`: CosPlace retrieval only, no Reloc3R/PGO
-- `verify_only`: retrieval + Reloc3R + depth verify, NO correct_tsfm write
-- `keyframe_pgo`: full pipeline including PGO trial (write only when safety passes)
+## Non-Paper Modules (Code Present but Not Described)
 
-### 8. Streaming global fusion
+The following modules exist in the codebase for compatibility but are NOT part of the paper:
 
-After front end finishes, the main process:
-1. Stops the back end (saves final submap)
-2. Stops loop closure (finalizes PGO)
-3. Streams submap checkpoints from disk
-4. Applies `correct_tsfm` via `rigid_transform_2dgs`
-5. Concatenates all submap Gaussians into a single global model
-6. Evaluates ATE and rendering quality
-7. Optionally saves final PLY
+| Module | How to disable |
+|---|---|
+| FFT Edge VO | Set `VOPrior.type=simple_rgbd_odom` |
+| Submap Strategy | `Ablation.use_submap=false` |
+| Gaussian Inheritance + RAP2DGS Lite | `Submap.use_inheritance=false` |
+| FDN Normal Supervision | `Ablation.use_fdn=false` |
+| Loop Closure + PGO + Reloc3R | `LoopClosure.mode=off` |
 
-### 9. Gaussian Inheritance (replaces Handoff)
+---
 
-To eliminate the cold-start coverage gap after submap cuts, the system inherits top-scoring old Gaussians as the new submap's active (re-optimizable) initial state:
-
-1. **Scoring**: At submap cut, RAP2DGS Lite scores all old Gaussians using seed frame + tail keyframe covisibility rendering (support count, opacity, and 6 geometric features via KNN).
-2. **Selection**: Top `inherit_keep_percent` (45%) scored Gaussians are retained as active. `inherit_min_keep` (3000) guarantees sufficient coverage for the last submap. If RAP2DGS internal keep_percent truncates below target, simple scoring auto-supplements.
-3. **Noise injection**: Inherited Gaussian positions receive σ=1mm random noise to break systematic biases from the old submap's optimization frame.
-4. **Seed frame**: Uses `init=False` when Gaussians exist — only error-mask holes are seeded, avoiding duplicate coverage.
-5. **Optimizer reset**: `training_setup()` creates fresh Adam moments for all Gaussians (inherited + newly seeded).
-
-Configuration (all under `Submap`):
-```yaml
-use_inheritance: true         # master switch
-inherit_keep_percent: 0.45    # fraction of old Gaussians to retain
-inherit_min_keep: 3000        # floor to guarantee last-submap coverage
-inherit_tail_kfs: 4           # old submap tail keyframes for covisibility
-inherit_min_support: 2        # min keyframes that must observe a Gaussian
-inherit_opacity_min: 0.20     # min opacity threshold
-inherit_max_points: 30000     # hard cap on inherited count
-```
-
-### 10. RAP2DGS Lite: Rule-Based Inheritance Scoring
-
-RAP2DGS Lite (`utils/rap2dgs_lite/`) provides lightweight rule-based scoring for Gaussian inheritance selection:
-
-1. **Candidate generation**: Visibility-based mask from seed frame + tail keyframe rendering.
-2. **Shared KNN**: Single chunked KNN on candidate positions, shared by all geometric features.
-3. **Six feature scores** (all normalized to [0,1]): support (percentile-norm), opacity (min-max norm), observation (log1p-norm), area (bounded midrange), normal consistency (mean |dot| with KNN), local density (bounded midrange of mean KNN distance).
-4. **Weighted fusion**: `S = 0.25·support + 0.20·opacity + 0.20·obs + 0.10·area + 0.15·normal + 0.10·density`.
+## System Architecture (Paper)
 5. **Top-K selection**: Retain top-scoring Gaussians. Auto-supplement with simple scoring if RAP2DGS selection falls below target.
 6. **Safety**: Never prunes active map. Auto-fallback to simple heuristic on any failure.
 
@@ -215,9 +200,7 @@ RAP2DGSLite:
 
 ```text
 FVO-GS-SLAM
-├── slam.py                         # main entry, process orchestration, streaming fusion, evaluation
-├── run_ablation.py                 # ablation experiment runner
-├── run_all_slam.sh                 # batch running script
+├── slam.py                         # main entry, process orchestration, evaluation
 ├── configs/
 │   └── rgbd/
 │       ├── tum/                    # TUM RGBD: base_config.yaml + scene overrides
@@ -226,37 +209,25 @@ FVO-GS-SLAM
 ├── gaussian_splatting/
 │   ├── gaussian_renderer/          # differentiable 2DGS surfel rendering
 │   └── scene/gaussian_model.py     # Gaussian params, densify, prune, optimizer state
-├── gui/                            # optional GUI visualization (OpenGL)
-├── scripts/                        # dataset download scripts
-├── tools/                          # debugging and testing tools
-├── tests/                          # unit tests
-├── weights/                        # CosPlace model weights
 ├── utils/
-│   ├── slam_frontend.py            # tracking, keyframes, submap decisions, queue comms
-│   ├── slam_backend.py             # Gaussian mapping, densify/prune, submap save
-│   ├── rap2dgs_lite/               # lightweight rule-based inheritance selection
-│   ├── fft_edge_vo.py              # FFT Edge VO: dense DT alignment + LM optimization
+│   ├── slam_frontend.py            # tracking, VOPrior, candidate selection, keyframes
+│   ├── slam_backend.py             # Gaussian mapping, FFT/error mask, RSKM, densify/prune
+│   ├── rgbd_vo_prior/              # VOPrior: Simple-RGBD-Odometry wrapper
 │   ├── fft_filter.py               # FFT high-frequency mask generation
-│   ├── loop_closure.py             # CosPlace, keyframe retrieval, Reloc3R/depth/PGO pipeline
-│   ├── reloc3r_adapter.py          # Reloc3R keyframe pair coarse pose estimation
-│   ├── keyframe_pgo.py             # keyframe graph build, PGO trial, safety eval, corrections
-│   ├── loop_depth_verifier.py      # RGB-D depth geometric verification with scale search
 │   ├── slam_utils.py               # tracking/mapping loss functions
 │   ├── pose_utils.py               # SE(3) pose update utilities
 │   ├── camera_utils.py             # Camera class (viewpoint.T = W2C)
-│   ├── dataset.py                  # dataset loading (TUM, Replica, ScanNet++, Realsense)
+│   ├── dataset.py                  # dataset loading (TUM, Replica, ScanNet++)
 │   ├── eval_utils.py               # ATE and rendering evaluation
-│   ├── normal_utils.py             # normal computation utilities
-│   ├── point_utils.py              # point cloud utilities
-│   ├── logging_utils.py            # logging
 │   ├── config_utils.py             # YAML config loading
-│   └── multiprocessing_utils.py    # FakeQueue for single-thread mode
-└── submodules/                     # diff-surfel-rasterization, simple-knn
+│   └── ...                         # non-paper auxiliary modules
+├── submodules/                     # diff-surfel-rasterization, simple-knn
+└── docs/                           # architecture analysis, experiment reports
 ```
 
 ---
 
-## System Architecture
+## System Architecture (Paper)
 
 ```text
 RGBD sequence
@@ -264,59 +235,37 @@ RGBD sequence
 Dataset loader → Camera objects
     ↓
 FrontEnd (main process)
-    ├── FFT mask generation (fft_filter.py)
-    ├── FFT Edge VO initial pose (fft_edge_vo.py)
-    │     cur→ref DT alignment + LM optimization
+    ├── VOPrior (Simple RGBD Odometry): ORB + RANSAC PnP → frame-to-frame delta → est_c2w
+    ├── Candidate Selection: {previous, constant_velocity, external_vo} → render precheck → best
     ├── Render-based pose refinement
     │     Adam on cam_rot_delta / cam_trans_delta
-    │     RGB L1 + DSSIM + depth L1 tracking loss
-    │     SA depth (use_sa=true): confidence-weighted expected depth,
-    │       outlier splat depths pulled toward median surface
-    ├── Keyframe decision + sliding window
-    ├── Motion monitoring → submap cut trigger
-    └── Auto-refresh FFTEdgeVO reference
+    │     RGB L1 + depth L1 tracking loss (opacity-masked)
+    │     SA depth (use_sa=true): confidence-weighted expected depth
+    ├── Keyframe decision + sliding window + visibility sync
+    └── queue → BackEnd
     ↓ queue messages
 BackEnd (independent process)
-    ├── Seed frame init → Gaussian map initialization
-    ├── Keyframe → extend Gaussian + mapping
-    ├── RGB + depth + normal (FDN) loss
+    ├── Seed frame init → Gaussian map initialization (FFT freq-aware sampling)
+    ├── Keyframe → FFT mask + error mask → extend_from_pcd_seq
+    ├── Gaussian only mapping (RGB L1 + DSSIM + depth L1 + dist loss)
+    │     └── RSKM: randomly sampled keyframe supervision
     ├── Densify / prune / opacity reset
     ├── occ_aware_visibility + pose sanity check
-    ├── RSKM: randomly sampled keyframe supervision
-    ├── Push Gaussian snapshot → FrontEnd
-    ├── Gaussian Inheritance: RAP2DGS-scored top-45% kept as active initial state
-    ├── σ=1mm noise breaks old-submap systematic biases
-    └── Save submap ckpt + notify loop closure
-    ↓ saved submap checkpoints
-LoopClosureProcess (independent process)
-    ├── Extract CosPlace descriptors from keyframe images
-    ├── Keyframe-level retrieval → keyframe pair candidates
-    ├── Reloc3R keyframe pair coarse pose estimation
-    ├── RGB-D depth geometric verification with scale search
-    ├── Refine → VerifiedLoopEdge (delta gates)
-    ├── Build keyframe pose graph (temporal/inheritance/loop edges)
-    ├── Keyframe PGO trial + safety evaluation
-    │     Open3D LM optimization on keyframe nodes
-    │     Safety gates: max correction, residual ratios, edge pruning
-    └── If accepted: save keyframe_pgo_result.json
+    └── Push Gaussian snapshot → FrontEnd
     ↓
 Main process after tracking
-    ├── Stop backend + loop closure
-    ├── Stream submap checkpoints from disk
-    ├── Apply correct_tsfm via rigid_transform_2dgs
-    ├── Concatenate global Gaussian model
-    ├── Correct camera trajectory
+    ├── Stop backend
     ├── Evaluate ATE + rendering quality
-    └── Optional: save PLY, offline color refinement
+    └── Optional: save PLY
 ```
 
 ---
 
-## Module Roles and Data Flow
+## Module Roles (Paper)
 
 ### `slam.py` — Main Entry
 
-Main entry and system controller. Creates Gaussian model, dataset, front end, back end, optional GUI, and optional loop closure process. Handles evaluation mode overrides, W&B logging, GPU memory monitoring, streaming submap loading and fusion, trajectory correction, rendering evaluation, and final model saving.
+Main entry and system controller. Creates Gaussian model, dataset, front end, back end, and optional GUI. Handles evaluation mode overrides, GPU memory monitoring, ATE and rendering evaluation.
 
 ### `utils/slam_frontend.py` — Front End
 
@@ -324,118 +273,69 @@ The front end is the main process (online tracking and scheduling).
 
 Key responsibilities:
 - Construct per-frame `Camera` objects (viewpoint.T = global W2C)
-- Generate FFT masks for keyframes
-- Run FFTEdgeVO for initial pose estimation
+- Run VOPrior (Simple RGBD Odometry) for initial pose estimation
+- Candidate Selection from {previous, constant_velocity, external_vo}
 - Refine pose via render-based differentiable optimization
 - Insert keyframes based on overlap ratio and translation
 - Manage sliding window and visibility synchronization
-- Compute motion relative to submap anchor
-- Trigger submap cut on motion threshold
-- Send `init`, `keyframe`, `new_submap`, `pause`, `stop` to back end
+- Send `init`, `keyframe`, `stop` to back end
 - Receive Gaussian snapshots and visibility from back end
 
-### `utils/fft_edge_vo.py` — FFT Edge VO
+### `utils/rgbd_vo_prior/` — VOPrior
 
-Dense visual odometry, Edge VO (EAGS-SLAM) style.
+Simple RGBD Odometry wrapper for tracking initialization.
 
-**Direction**: cur→ref — project current-frame 3D points into reference-frame DT pyramid.
-
-**Pipeline**:
-1. `set_reference(image, depth, c2w)`: FFT mask → DT (full res) → pyramid → Sobel(DT) → pre-multiply fx/fy → store gradient structure pyramid
-2. `track(image, depth, init_c2w)`: FFT mask → backproject 3D → coarse-to-fine LM with analytic SE(3) Jacobian → final C2W
-3. `_lm_optimise()`: damped Gauss-Newton, DT gradient lookup, analytic Jacobian (Kerl 2012)
-
-Returns `(success, est_c2w, info_dict)` with `dt_mean`, `visible`, `iters`.
+- **Frame-to-frame delta alignment**: `est_c2w = init_c2w @ delta` (prevents VO drift)
+- **Quality gates**: min valid keypoints, min inliers, min inlier ratio, max motion t/r
+- Returns `(success, est_c2w, info_dict)`
 
 ### `utils/fft_filter.py` — FFT Mask
 
-Builds a high-frequency mask from RGB: CLAHE → FFT → Gaussian HPF → IFFT → triangle threshold → bool mask. Used by Gaussian sampling (controls initial scale) and FFTEdgeVO feature selection.
+Builds a high-frequency mask from RGB: CLAHE → FFT → Gaussian HPF → IFFT → triangle threshold → bool mask. Controls Gaussian sampling density (dense in high-freq, sparse in low-freq) and initial scale (larger in low-freq).
 
 ### `utils/slam_backend.py` — Back End
 
 Asynchronous local mapping (independent process).
 
 Key responsibilities:
-- Receive `init`, `keyframe`, `new_submap` messages from front end
+- Receive `init`, `keyframe` messages from front end
 - Initialize Gaussian map from seed keyframe
-- Add new keyframes with FFT mask + error mask guided point insertion
+- Compute FFT mask (via FFTFilter) and error mask (via render + gt comparison)
+- Add new keyframes with FFT mask + error mask guided point insertion (`extend_from_pcd_seq`)
 - Optimize Gaussian parameters with RSKM-sampled keyframe supervision
+- RGB L1 + DSSIM + depth L1 + dist loss
 - Collect visibility and densification statistics
 - Densify, reset opacity, and prune Gaussian points
-- Select top-45% scored Gaussians for inheritance into new submap (active, re-optimizable)
 - Maintain `occ_aware_visibility` keyed by keyframe index
-- Push Gaussian snapshots, keyframe poses, and inheritance to front end
-- Save submap checkpoints on `new_submap` and `stop`
-- Notify loop closure on submap save
-- Prune ALL Gaussian points and reset state for independent submap init
+- Push Gaussian snapshots to front end
+### `gaussian_splatting/scene/gaussian_model.py` — 2DGS Model
 
-### `utils/loop_closure.py` — Loop Closure
+Stores and updates 2DGS surfel map parameters: `_xyz` (position), `_features_dc/_rest` (SH color), `_opacity`, `_scaling` (2D tangent-space), `_rotation` (quaternion→normal). Key methods: `extend_from_pcd_seq()` (RGBD back-projection + FFT/error mask filtering + KNN scale init), `densify_and_prune()` (gradient-driven densify + opacity/scale prune), `training_setup()` (Adam optimizer with exponential position LR decay).
 
-Keyframe-level global consistency (independent process).
+### `gaussian_splatting/gaussian_renderer/__init__.py` — Differentiable Renderer
 
-Key responsibilities:
-- Implement CosPlace visual retrieval network (ResNet18 + GeM pooling)
-- Maintain submap checkpoint records and keyframe database
-- Extract per-keyframe CosPlace descriptors from saved images
-- Keyframe-level retrieval → cross-submap pair candidates
-- Reloc3R keyframe pair coarse pose estimation
-- RGB-D depth geometric verification with log-scale search
-- Refine → VerifiedLoopEdge with delta gates
-- Build keyframe pose graph (temporal/inheritance/loop edges)
-- Keyframe PGO trial + safety evaluation
-- Save keyframe_pgo_result.json when accepted
-- LoopClosure mode control (`off`/`detect_only`/`verify_only`/`keyframe_pgo`)
+Differentiable 2DGS surfel renderer wrapping CUDA rasterizer. Outputs:
 
-### `utils/reloc3r_adapter.py` — Reloc3R Keyframe Pair Estimation
+| Field | Meaning |
+|---|---|
+| `render` | RGB image (3×H×W) |
+| `depth` | Selected depth: SA expected / median-expected mixed |
+| `opacity` | Accumulated alpha |
+| `rend_dist` | Depth variance: SA `Σw_i·(d_i-d_median)²` or standard distortion |
+| `visibility_filter` | Visible Gaussians (radii > 0) |
+| `n_touched` | Per-Gaussian touch count |
 
-Keyframe-level coarse relative pose estimation using Reloc3R (DUSt3R variant).
-
-Key responsibilities:
-- Load Reloc3R model once, reuse across all keyframe pairs
-- Run Reloc3R inference on a single keyframe pair
-- Preserve raw Reloc3R translation (scale search delegated to depth verifier)
-- Return `Reloc3RPairEstimate` with direction alignment diagnostics
-
-### `utils/keyframe_pgo.py` — Keyframe PGO
-
-Keyframe-level pose graph optimization and correction module.
-
-Key responsibilities:
-- Build keyframe pose graph from unified keyframe database
-- Run O3D PGO trial with safety evaluation gates
-- Apply per-keyframe trajectory correction (left-multiply delta)
-- Apply submap-median Gaussian correction from keyframe deltas
-
-### `utils/loop_depth_verifier.py` — Depth Verification
-
-RGB-D geometric verification for Reloc3R keyframe pair estimates.
-
-Key responsibilities:
-- Back-project source depth to 3D point cloud
-- Transform, project, compare with target depth
-- Log-spaced scale search to find optimal translation scale
-- Three-gate acceptance: overlap, RMSE, inlier ratio
-
-### `gaussian_splatting/scene/gaussian_model.py` — Gaussian Model
-
-Stores and updates 2DGS Gaussian map parameters: `_xyz`, `_features_dc`, `_features_rest`, `_opacity`, `_scaling`, `_rotation`, `_normal`. Key methods: `extend_from_pcd_seq()`, `densify_and_prune()`, `prune_points()`, `capture_dict()`, `training_setup()`.
-
-### `gaussian_splatting/gaussian_renderer/__init__.py` — Renderer
-
-Differentiable 2DGS surfel renderer. Outputs: `render` (RGB), `depth`, `opacity`, `rend_normal`, `surf_normal`, `viewspace_points`, `visibility_filter`, `radii`, `n_touched`.
+Depth selection: `use_sa_depth=true` → SA expected depth; `use_sa_depth=false` → `(1-ratio)×expected + ratio×median`.
 
 ---
 
-## Main Queue Messages
+## Main Queue Messages (Paper)
 
 Front end → back end (multiprocessing Queue):
 
 ```text
 ["init", cur_frame_idx, viewpoint, depth_map]
 ["keyframe", cur_frame_idx, viewpoint, current_window, depth_map]
-["new_submap", completed_submap_id, relative_pose, new_seed_global_c2w]
-["pause"]
-["unpause"]
 ["stop"]
 ```
 
@@ -445,13 +345,6 @@ Back end → front end:
 ["init", gaussians, occ_aware_visibility, keyframes]
 ["keyframe", gaussians, occ_aware_visibility, keyframes]
 ["sync_backend", gaussians, occ_aware_visibility, keyframes]
-```
-
-Back end → loop closure:
-
-```text
-["submap_saved", submap_id, ckpt_path, kf_image_paths, kf_depth_paths]
-["stop"]
 ```
 
 Do not change these message formats unless every sender and receiver is updated together.
@@ -464,25 +357,22 @@ Do not change these message formats unless every sender and receiver is updated 
 |---|---|---|
 | `viewpoint.T` | global **W2C** (4×4) | FrontEnd tracking writes |
 | `torch.linalg.inv(viewpoint.T)` | global **C2W** (4×4) | Computed as needed |
-| `seed_global_c2w` | submap seed global C2W | Set at submap cut |
-| `relative_pose` | prev_seed → curr_seed (4×4) | Computed at submap cut |
-| `correct_tsfm` | PGO/loop correction (4×4) | Only loop closure writes |
 | `cam_rot_delta` / `cam_trans_delta` | SE(3) delta for render refinement | Per-frame Adam optimizer |
 
 **Do not change these conventions.**
 
 ---
 
-## Configuration Overview
+## Paper Configuration Overview
 
 Important configuration groups:
 
 | Group | Controls |
 |---|---|
-| `Results` | save path, trajectory saving, GUI, rendering eval, W&B |
+| `Results` | save path, trajectory saving, GUI, rendering eval |
 | `Dataset` | dataset type, sensor type, camera params, point sampling |
 | `Training` | init/mapping/tracking iters, keyframe, window, LR, densify/prune, RSKM |
-| `FFTEdgeVO` | Edge VO pyramid, optimization, quality thresholds |
+| `VOPrior` / `SimpleRGBDOdom` | VO prior type, quality gates, refinement iters |
 | `Backend` | keyframe pose policy, pose sanity check |
 | `Submap` | motion thresholds (TUM: 2.0m/80°), seed init, Gaussian Inheritance |
 | `RAP2DGSLite` | inheritance scoring: KNN k, features, weights, selection budget |
@@ -583,33 +473,40 @@ Evaluation logs include FPS, ATE, rendering metrics, GPU memory peak (minus base
 
 ---
 
-## Ablation Switches
+## Paper Ablation Switches
 
 ```yaml
 Ablation:
-  use_submap: True            # submap cutting (off → global single map)
-  use_loop_closure: True      # loop detection + PGO correction
-  use_fdn: True               # finite-difference normal supervision
   use_fft_mask: True          # FFT frequency mask for sampling + scale
   use_error_mask: True        # render error mask for dynamic point insertion
-  use_color_refinement: False # offline color refinement after merge
 
-FFTEdgeVO:
-  use_fft_edge_vo: true       # enable FFT Edge VO initial pose
+# Non-paper ablation switches (set to false / off for paper experiments):
+Ablation:
+  use_submap: False           # submap cutting (paper: single global map)
+  use_loop_closure: False     # loop detection + PGO (paper: disabled)
+  use_fdn: False              # FDN normal supervision (paper: disabled)
+
+VOPrior:
+  type: simple_rgbd_odom      # VO prior type (paper: Simple RGBD Odometry)
 
 Backend:
   optimize_keyframe_pose: true        # keyframe pose optimization in back end
   optimize_keyframe_exposure: false   # keyframe exposure optimization
 
-LoopClosure:
-  mode: verify_only  # off / detect_only / verify_only / keyframe_pgo
-  keyframe_pgo_safety:
-    max_correction_t: 1.0
-    max_correction_r_deg: 15.0
-    min_verified_loop_edges: 3
+# Paper key configs for three depth modes:
+pipeline_params:
+  use_sa: true              # CUDA SA depth adjustment
+  use_sa_depth: true        # use SA expected depth in loss
+  depth_ratio: 1.0          # 0=expected, 1=median (only when use_sa_depth=false)
+opt_params:
+  use_sa_dist: false        # SA dist vetoed (improves depth L1, degrades ATE)
+  lambda_dist: 0.0          # distortion loss weight (0=off)
+Training:
+  use_rskm: true            # RSKM random keyframe replay
+  rskm_current_frame_interval: 4
+  use_freq_sampling_density: true   # frequency-aware sampling density
+  use_rgb_error_mask: true          # RGB error mask (sync with use_error_mask)
 ```
-
-For debugging FFTEdgeVO alone, set `LoopClosure.mode=off` — evaluates whether FFTEdgeVO improves tracking before global corrections are introduced.
 
 ---
 
@@ -617,15 +514,20 @@ For debugging FFTEdgeVO alone, set `LoopClosure.mode=off` — evaluates whether 
 
 - The system is sensitive to CUDA, PyTorch, Open3D, and differentiable Gaussian rasterizer versions.
 - Recommended workflow: run a short smoke test first, then full evaluation.
-- For fair comparison, keep the same dataset sequence, image resolution, tracking/mapping iterations, submap thresholds, and ablation switches.
-- When analyzing submap experiments, report both ATE and rendering metrics before/after global fusion or offline color refinement.
-- When debugging FFTEdgeVO, log `dt_mean`, `visible`, `iters`, tracking source, and convergence behavior.
+- For fair comparison, keep the same dataset sequence, image resolution, tracking/mapping iterations, and ablation switches.
 
 ---
 
 ## Acknowledgement
 
-This project is developed based on the MonoGS style Gaussian SLAM framework. The repository adapts it toward RGBD 2D Gaussian SLAM with FFT Edge VO initialization, motion-based submaps, CosPlace + Reloc3R keyframe pair estimation + RGB-D depth verification + keyframe-level PGO, and streaming global fusion.
+This project is developed based on the MonoGS style Gaussian SLAM framework. The paper system features VOPrior (Simple RGBD Odometry) tracking initialization, FFT frequency-aware Gaussian seeding, error-mask guided dynamic point insertion, three depth supervision sources (expected/median/surfel-aware), RSKM random keyframe replay, and depth distortion loss.
+
+References:
+- 2D Gaussian Splatting: [Surfel-based Gaussian Rendering](https://surfelsplatting.github.io/)
+- Simple RGBD Odometry: [Simple-RGBD-Odometry](https://github.com/HKCLynn/Simple-RGBD-Odometry)
+- RSKM: [GS3LAM](https://github.com/lif314/GS3LAM)
+- SA Depth: [GauS-SLAM](https://github.com/irvingwu5/gaus-slam)
+- FFT Filter: [FGS-SLAM](https://github.com/3DV-Coder/FGS-SLAM)
 
 ---
 

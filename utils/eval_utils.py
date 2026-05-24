@@ -133,6 +133,8 @@ def eval_rendering(
 
     # 【解耦数据池】：分清 NVS(非关键帧) 和 All(全部采样帧)
     nvs_psnr_array, nvs_ssim_array, nvs_lpips_array = [], [], []
+    all_psnr_array = []  # 全采样帧 PSNR (用于轨迹可视化)
+    all_frame_ids = []   # 全采样帧 ID (用于轨迹可视化)
     all_depth_l1_array = []  # <== 专门用来装全部采样帧的深度误差
 
     cal_lpips = LearnedPerceptualImagePatchSimilarity(
@@ -203,13 +205,32 @@ def eval_rendering(
             render_poses_dict[str(idx)] = frame.T.cpu().numpy().tolist()
 
         # ---------------------------------------------------------
-        # [逻辑分支 C]：NVS 专属 -> 如果是关键帧，直接跳过指标计算！
+        # [逻辑分支 C]：全帧 PSNR (用于轨迹可视化) + NVS 专属指标
         # ---------------------------------------------------------
+        mask = gt_image > 0
+        psnr_val = psnr((image[mask]).unsqueeze(0), (gt_image[mask]).unsqueeze(0)).item()
+        all_psnr_array.append(psnr_val)
+        all_frame_ids.append(idx)
+
+        # Crop valid region for SSIM/LPIPS (match PSNR mask semantic)
+        valid_2d = mask.all(dim=0)
+        if valid_2d.any():
+            rows = torch.any(valid_2d, dim=1)
+            cols = torch.any(valid_2d, dim=0)
+            r_min, r_max = torch.where(rows)[0][[0, -1]]
+            c_min, c_max = torch.where(cols)[0][[0, -1]]
+            r_max += 1
+            c_max += 1
+        else:
+            r_min, r_max, c_min, c_max = 0, image.shape[1], 0, image.shape[2]
+
+        # NVS 专属 -> 如果是关键帧，跳过 NVS 指标计算
         if idx in kf_indices:
             continue
 
         # 以下代码仅针对【非关键帧】（NVS 测试）执行
         saved_frame_idx.append(idx)
+        nvs_psnr_array.append(psnr_val)
 
         # 获取 GT 并计算图像指标
         gt = (gt_image.cpu().numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
@@ -222,13 +243,11 @@ def eval_rendering(
         img_pred.append(pred_bgr_nvs)
         img_gt.append(gt_bgr)
 
-        mask = gt_image > 0
+        image_crop = image[:, r_min:r_max, c_min:c_max].unsqueeze(0)
+        gt_crop = gt_image[:, r_min:r_max, c_min:c_max].unsqueeze(0)
+        ssim_score = ssim(image_crop, gt_crop)
+        lpips_score = cal_lpips(image_crop, gt_crop)
 
-        psnr_score = psnr((image[mask]).unsqueeze(0), (gt_image[mask]).unsqueeze(0))
-        ssim_score = ssim((image).unsqueeze(0), (gt_image).unsqueeze(0))
-        lpips_score = cal_lpips((image).unsqueeze(0), (gt_image).unsqueeze(0))
-
-        nvs_psnr_array.append(psnr_score.item())
         nvs_ssim_array.append(ssim_score.item())
         nvs_lpips_array.append(lpips_score.item())
 
@@ -258,6 +277,19 @@ def eval_rendering(
     if is_final_eval:
         with open(os.path.join(mesh_render_dir, "render_poses.json"), "w") as f:
             json.dump(render_poses_dict, f, indent=4)
+
+    # Save per-frame PSNR and frame IDs for trajectory visualization
+    if len(all_psnr_array) > 0:
+        np.savetxt(os.path.join(psnr_save_dir, "all_psnr.txt"), np.array(all_psnr_array), fmt="%.6f")
+        np.savetxt(os.path.join(psnr_save_dir, "all_frame_ids.txt"), np.array(all_frame_ids), fmt="%d")
+        # Save full camera trajectory (all frames sorted by frame ID, W2C XY positions)
+        sorted_fids = sorted(frames.keys())
+        all_positions = []
+        for fid in sorted_fids:
+            w2c = frames[fid].T.cpu().numpy()
+            all_positions.append([fid, w2c[0, 3], w2c[1, 3]])  # frame_id, X, Y
+        np.savetxt(os.path.join(psnr_save_dir, "trajectory_xy.txt"), np.array(all_positions), fmt=["%d", "%.6f", "%.6f"])
+        Log(f"Saved per-frame PSNR ({len(all_psnr_array)} frames) and trajectory for visualization", tag="Eval")
 
     return output
 

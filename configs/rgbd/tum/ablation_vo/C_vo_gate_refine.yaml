@@ -1,0 +1,32 @@
+# Round C: VO + Gate + Gaussian Refinement — VO 初值 + 候选选择 + 渲染 gate + 精化 (fr3_office)
+inherit_from: "configs/rgbd/tum/fr3_office.yaml"
+
+Ablation:
+  use_fft_mask: False
+  use_submap: False
+  use_loop_closure: False
+  use_fdn: False
+  use_error_mask: False
+  use_color_refinement: True
+
+VOPrior:
+  type: simple_rgbd_odom
+  candidate_selection_enable: true
+  vo_render_gate_enable: true
+  tracking_refine_iters: 60
+  tracking_fallback_iters: 120
+  vo_candidate_interval: 1
+  full_render_warmup_frames: 0
+  debug_log: false
+  vo_max_color_loss: 0.30
+  vo_max_depth_loss: 0.15
+  vo_min_opacity_ratio: 0.30
+  vo_max_score_ratio_to_best: 1.25
+
+Training:
+  use_rskm: False
+  use_freq_sampling_density: false
+  use_rgb_error_mask: false
+
+Backend:
+  optimize_keyframe_pose: true

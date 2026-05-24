@@ -1,0 +1,24 @@
+# B: 2DGS Base + RSKM — vanilla random keyframe replay, no VO (fr3_office)
+inherit_from: "configs/rgbd/tum/fr3_office.yaml"
+
+Ablation:
+  use_fft_mask: False
+  use_submap: False
+  use_loop_closure: False
+  use_fdn: False
+  use_error_mask: False
+  use_color_refinement: True
+
+VOPrior:
+  type: none
+  candidate_selection_enable: false
+  vo_render_gate_enable: false
+
+Training:
+  use_rskm: True
+  rskm_mode: vanilla
+  use_freq_sampling_density: false
+  use_rgb_error_mask: false
+
+Backend:
+  optimize_keyframe_pose: true

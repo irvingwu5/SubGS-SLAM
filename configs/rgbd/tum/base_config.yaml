@@ -82,7 +82,7 @@ Training:
   use_freq_sampling_density: true   # 是否启用频率感知采样密度（高频密/低频疏）
   high_freq_sample_stride: 2        # 高频区域采样步长（1=全采样）
   low_freq_sample_stride: 4         # 低频区域采样步长
-  depth_error_median_factor: 10.0   # 深度穿透误差阈值乘数（FGS-SLAM: 10）
+  depth_error_median_factor: 40.0   # 深度穿透误差阈值乘数（FGS-SLAM: 10）
   error_mask_opacity_th: 0.98       # alpha 空洞检测阈值（FGS-SLAM: 0.98）
   use_rgb_error_mask: false         # 是否启用 RGB 表达误差掩膜
   rgb_error_th: 0.5                 # RGB 误差阈值（0-1 空间）
@@ -127,7 +127,7 @@ Training:
 VOPrior:
   type: simple_rgbd_odom           # VO prior type: "none" | "simple_rgbd_odom"
   debug_log: false                  # 是否输出 VOPrior 调试日志
-  full_render_warmup_frames: 100     # 前 N 帧跳过 VO，全量 100 迭代 warmup（0=关闭）
+  full_render_warmup_frames: 0     # 前 N 帧跳过 VO，全量 100 迭代 warmup（0=关闭）
   tracking_refine_iters: 40         # VO render-accepted 后精化迭代数
   tracking_fallback_iters: 120      # VO 失败/未选中时渲染精化迭代数
 
@@ -149,7 +149,7 @@ VOPrior:
   submap_cut_gate_enable: true           # 是否启用子图切换质量门控
   submap_cut_min_opacity: 0.05           # 子图切换最低不透明度覆盖率
   submap_cut_max_delay: 3                # 最大延迟切图帧数
-
+#如果关掉 VOPrior.type: none，底层 SimpleRGBDOdom 就不会被初始化，SimpleRGBDOdom.enable 也就无关了。
 # ============================================================
 # Simple-RGBD-Odometry Configuration (external VO prior)
 # ============================================================

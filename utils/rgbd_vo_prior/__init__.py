@@ -112,7 +112,10 @@ class SimpleRGBDVOProvider:
 
         # Call upstream register_frame (RGB image expected), suppress upstream prints
         with redirect_stdout(io.StringIO()):
-            frame_pcd, corresp_tuple = self._odom.register_frame(rgb_img, depth_np)
+            try:
+                frame_pcd, corresp_tuple = self._odom.register_frame(rgb_img, depth_np)
+            except Exception:
+                frame_pcd, corresp_tuple = np.empty((0, 3)), None
 
         # Extract VO's local C2W (relative to VO's starting identity)
         vo_pose = self._odom.poses[-1].copy() if self._odom.poses else np.eye(4)

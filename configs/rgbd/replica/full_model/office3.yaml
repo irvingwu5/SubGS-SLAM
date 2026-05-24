@@ -1,0 +1,35 @@
+# Full Model: 2DGS Base + SA depth/dist + VO + PAR-RSKM (replica office3)
+inherit_from: "configs/rgbd/replica/office3.yaml"
+
+Ablation:
+  use_fft_mask: False
+  use_submap: False
+  use_loop_closure: False
+  use_fdn: False
+  use_error_mask: False
+  use_color_refinement: True
+
+VOPrior:
+  type: simple_rgbd_odom
+  candidate_selection_enable: false
+  vo_render_gate_enable: false
+  tracking_refine_iters: 60
+  tracking_fallback_iters: 120
+  full_render_warmup_frames: 0
+  debug_log: false
+
+Training:
+  use_rskm: True
+  rskm_mode: par
+  par_rskm_beta_pose: 5.0
+  par_rskm_gamma: 1.0
+  use_freq_sampling_density: false
+  use_rgb_error_mask: false
+
+pipeline_params:
+  use_sa: true
+  use_sa_depth: true
+
+Backend:
+  optimize_keyframe_pose: true
+

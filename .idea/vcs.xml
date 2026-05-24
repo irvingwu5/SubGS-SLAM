@@ -2,5 +2,8 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/third_party/Simple-RGBD-Odometry" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/third_party/reloc3r" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/third_party/reloc3r/croco" vcs="Git" />
   </component>
 </project>

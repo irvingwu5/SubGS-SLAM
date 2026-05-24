@@ -99,6 +99,8 @@ class FrontEnd(mp.Process):
         self.submap_cut_max_delay = int(vop_cfg.get("submap_cut_max_delay", 3))
         self.submap_cut_delay_count = 0
         self.last_tracking_diag = {}
+        self.track_times = []  # per-frame tracking time (ms)
+        self.track_iter_counts = []  # per-frame actual iteration count
 
     # ========================================================================
     # 2. VO Prior helpers
@@ -371,6 +373,8 @@ class FrontEnd(mp.Process):
             )
             return render_pkg
 
+        t0 = time.perf_counter()
+
         prev_cam = self.cameras.get(cur_frame_idx - 1)
 
         # ---- Step 1: External VO prior estimation ---------------------------
@@ -460,7 +464,11 @@ class FrontEnd(mp.Process):
             elif prev_cam is not None:
                 viewpoint.T = prev_cam.T.clone()
         else:
-            if prev_cam is not None:
+            # Direct VO pose application (no candidate rendering overhead)
+            if vo_success and est_c2w is not None:
+                viewpoint.T = torch.from_numpy(np.linalg.inv(est_c2w)).float().cuda()
+                selected_candidate_name = "external_vo"
+            elif prev_cam is not None:
                 viewpoint.T = prev_cam.T.clone()
                 selected_candidate_name = "previous"
 
@@ -587,6 +595,11 @@ class FrontEnd(mp.Process):
             viewpoint.par_replay_count = 0
             viewpoint.par_last_replay_iter = -1
             viewpoint.par_initialized = True
+
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        actual_iters = tracking_itr + 1
+        self.track_times.append(dt_ms)
+        self.track_iter_counts.append(actual_iters)
 
         return best_render_pkg if best_render_pkg is not None else render_pkg
 
@@ -969,7 +982,18 @@ class FrontEnd(mp.Process):
             torch.cuda.empty_cache()
 
     # ========================================================================
-    # 14. Main Loop
+    # 14. Tracking Stats
+    # ========================================================================
+    def report_tracking_stats(self):
+        """Return avg track time (ms) and avg iteration count."""
+        avg_time = float(np.mean(self.track_times)) if self.track_times else 0.0
+        avg_iter = float(np.mean(self.track_iter_counts)) if self.track_iter_counts else 0.0
+        Log(f"Track Time avg: {avg_time:.2f} ms, Iteration Count avg: {avg_iter:.2f}",
+            tag="TrackingStats")
+        return avg_time, avg_iter
+
+    # ========================================================================
+    # 15. Main Loop
     # ========================================================================
     def run(self):
         cur_frame_idx = 0

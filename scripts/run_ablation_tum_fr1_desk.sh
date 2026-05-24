@@ -15,7 +15,7 @@ export CUDA_VISIBLE_DEVICES=1
 
 python slam.py --config configs/rgbd/tum/ablation_fr1/A_all_off.yaml --eval 2>&1 | tee outputs/aba_fr1_desk_A_all_off.log
 python slam.py --config configs/rgbd/tum/ablation_fr1/B_vo.yaml --eval 2>&1 | tee outputs/aba_fr1_desk_B_vo.log
-python slam.py --config configs/rgbd/tum/ablation_fr1/C_vo_rskm.yaml --eval 2>&1 | tee outputs/aba_fr1_desk_C_vo_rskm.log
+#python slam.py --config configs/rgbd/tum/ablation_fr1/C_vo_rskm.yaml --eval 2>&1 | tee outputs/aba_fr1_desk_C_vo_rskm.log
 python slam.py --config configs/rgbd/tum/ablation_fr1/D_vo_rskm_fft.yaml --eval 2>&1 | tee outputs/aba_fr1_desk_D_vo_rskm_fft.log
 python slam.py --config configs/rgbd/tum/ablation_fr1/E_vo_rskm_fft_err.yaml --eval 2>&1 | tee outputs/aba_fr1_desk_E_vo_rskm_fft_err.log
 python slam.py --config configs/rgbd/tum/ablation_fr1/F_vo_rskm_fft_err_sad.yaml --eval 2>&1 | tee outputs/aba_fr1_desk_F_vo_rskm_fft_err_sad.log

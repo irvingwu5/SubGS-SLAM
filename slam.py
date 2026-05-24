@@ -486,7 +486,8 @@ class SLAM:
         # =====================================================================
         if self.eval_rendering:
             kf_indices = self.frontend.kf_indices
-            columns = ["tag", "psnr", "ssim", "lpips", "Depth L1", "RMSE ATE", "FPS"]
+            columns = ["tag", "psnr", "ssim", "lpips", "Depth L1", "RMSE ATE", "FPS",
+                       "Track Time [ms]", "Iter."]
             metrics_table = wandb.Table(columns=columns)
 
             # Phase A: Evaluate ATE (after PGO, before offline opt)
@@ -500,6 +501,9 @@ class SLAM:
                 monocular=self.monocular,
             )
             # Skip pre-opt rendering to save time; only ATE is computed in Phase A
+
+            # Track Time & Iteration Count from FrontEnd
+            avg_track_time, avg_iter_count = self.frontend.report_tracking_stats()
 
             for cam in self.frontend.cameras.values():
                 if hasattr(cam, "release_mapping_payload"):
@@ -591,7 +595,10 @@ class SLAM:
                         rendering_result_after["mean_ssim"],
                         rendering_result_after["mean_lpips"],
                         rendering_result_after.get("mean_depth_l1", 0.0),
-                        final_ATE, FPS,
+                        final_ATE,
+                        FPS,
+                        avg_track_time,
+                        avg_iter_count,
                     )
 
                 else:

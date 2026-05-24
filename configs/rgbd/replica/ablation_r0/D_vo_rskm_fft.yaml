@@ -20,6 +20,8 @@ Training:
   use_rskm: True
   rskm_mode: par
   use_freq_sampling_density: true
+  high_freq_sample_stride: 1
+  low_freq_sample_stride: 2
   use_rgb_error_mask: false
 
 opt_params:

@@ -20,3 +20,4 @@ python slam.py --config configs/rgbd/replica/ablation_r0/D_vo_rskm_fft.yaml --ev
 python slam.py --config configs/rgbd/replica/ablation_r0/E_vo_rskm_fft_err.yaml --eval 2>&1 | tee outputs/aba_replica_room0_E_vo_rskm_fft_err.log
 python slam.py --config configs/rgbd/replica/ablation_r0/F_vo_rskm_fft_err_sad.yaml --eval 2>&1 | tee outputs/aba_replica_room0_F_vo_rskm_fft_err_sad.log
 python slam.py --config configs/rgbd/replica/ablation_r0/G_full.yaml --eval 2>&1 | tee outputs/aba_replica_room0_G_full.log
+

@@ -11,6 +11,10 @@ Key invariants (must hold across all refactoring stages):
   - relative_pose = inv(seed_prev) @ seed_curr.
   - correct_tsfm is a left-multiplied correction: optimized = correct_tsfm @ original.
   - Gaussian xyz is already in global coordinates; fusion only applies correct_tsfm.
+  - Edge convention: T_source_from_target = inv(c2w_src) @ c2w_tgt.
+    This transforms a point FROM target camera frame TO source camera frame.
+    Open3D input direction T_o3d depends on O3D's constraint equation
+    (see tests/test_pgo_direction.py for experimental verification).
 """
 
 import os
@@ -38,12 +42,16 @@ class KeyframeNode:
 class KeyframeEdge:
     """An edge between two keyframe nodes.
 
-    T_source_to_target = inv(c2w_source) @ c2w_target.
+    T_source_from_target = inv(c2w_source) @ c2w_target.
+    This transforms a point FROM target camera frame TO source camera frame:
+        P_source = T_source_from_target @ P_target
+    Equivalently: T_source_from_target = T_source_from_world @ T_world_from_target.
+
     edge_type is one of: "temporal", "handoff", "loop".
     """
     source_keyframe_id: int
     target_keyframe_id: int
-    T_source_to_target: np.ndarray  # 4x4
+    T_source_from_target: np.ndarray  # 4x4, = inv(c2w_src) @ c2w_tgt
     edge_type: str  # "temporal" | "handoff" | "loop"
     information: Optional[np.ndarray] = None  # 6x6
     diagnostics: Dict[str, Any] = field(default_factory=dict)
@@ -81,14 +89,15 @@ class VerifiedLoopEdge:
     This is produced AFTER depth verification and optional render/GSReg refinement.
     Must never be constructed directly from Reloc3R raw output.
 
-    Convention: T_source_to_target = inv(c2w_source) @ c2w_target
-    This maps a point from source camera to target camera frame.
+    Convention: T_source_from_target = inv(c2w_source) @ c2w_target.
+    This transforms a point FROM target camera frame TO source camera frame:
+        P_source = T_source_from_target @ P_target
     """
     source_keyframe_id: int
     target_keyframe_id: int
     source_submap_id: int = 0
     target_submap_id: int = 0
-    T_source_to_target: np.ndarray = field(default_factory=lambda: np.eye(4))  # 4x4 refined
+    T_source_from_target: np.ndarray = field(default_factory=lambda: np.eye(4))  # 4x4 refined
     information: Optional[np.ndarray] = None  # 6x6
     source_c2w_original: Optional[np.ndarray] = None  # 4x4
     target_c2w_original: Optional[np.ndarray] = None  # 4x4
@@ -296,6 +305,7 @@ def retrieve_keyframe_loop_candidates(
     min_submap_gap = config.get("min_interval", 3)
     use_mutual = config.get("keyframe_retrieval_mutual_nearest", True)
     mutual_top_n = config.get("keyframe_retrieval_mutual_top_n", 20)
+    allow_same_submap = config.get("allow_same_submap_loops", False)
 
     query_desc = np.array(query_desc, dtype=np.float32)
     query_norm = np.linalg.norm(query_desc)
@@ -308,10 +318,10 @@ def retrieve_keyframe_loop_candidates(
     for target_id, target_rec in keyframe_db.items():
         if target_id == query_keyframe_id:
             continue
-        if target_rec.submap_id == query_submap:
+        if not allow_same_submap and target_rec.submap_id == query_submap:
             continue
         submap_diff = abs(query_submap - target_rec.submap_id)
-        if submap_diff < min_submap_gap:
+        if submap_diff > 0 and submap_diff < min_submap_gap:
             continue
         temporal_gap = abs(query_keyframe_id - target_id)
         if temporal_gap < min_temporal_gap:
@@ -357,6 +367,7 @@ def retrieve_keyframe_loop_candidates(
                     cand.target_keyframe_id, keyframe_db,
                     top_n=mutual_top_n, min_submap_gap=min_submap_gap,
                     min_temporal_gap=min_temporal_gap,
+                    allow_same_submap=allow_same_submap,
                 )
                 query_in_target_top = any(
                     n_id == query_keyframe_id for n_id, _ in target_neighbors
@@ -376,6 +387,7 @@ def _find_nearest_keyframes(
     top_n: int = 20,
     min_submap_gap: int = 3,
     min_temporal_gap: int = 10,
+    allow_same_submap: bool = False,
 ) -> List[tuple]:
     """Find nearest keyframes by cosine similarity from KeyframeRecord descriptors."""
     query_rec = keyframe_db.get(query_id)
@@ -391,9 +403,9 @@ def _find_nearest_keyframes(
     for target_id, target_rec in keyframe_db.items():
         if target_id == query_id:
             continue
-        if target_rec.submap_id == query_rec.submap_id:
+        if not allow_same_submap and target_rec.submap_id == query_rec.submap_id:
             continue
-        if abs(query_rec.submap_id - target_rec.submap_id) < min_submap_gap:
+        if abs(query_rec.submap_id - target_rec.submap_id) > 0 and abs(query_rec.submap_id - target_rec.submap_id) < min_submap_gap:
             continue
         if abs(query_id - target_id) < min_temporal_gap:
             continue
@@ -454,7 +466,8 @@ def refine_keyframe_loop_edge(
         config = {}
 
     gate_cfg = config.get("loop_edge_gates", {})
-    T_refined = depth_verified_pair.T_target_from_source.copy()  # T_target_from_source
+    # T_target_from_source maps source→target: P_target = T @ P_source
+    T_tgt_frm_src = depth_verified_pair.T_target_from_source.copy()
 
     edge.verification_metrics = {
         "depth_overlap": depth_verified_pair.depth_overlap,
@@ -470,11 +483,12 @@ def refine_keyframe_loop_edge(
         return edge
 
     # ---- Delta gate (odometry consistency) ----
+    # odom_T = inv(c2w_tgt) @ c2w_src = T_tgt_frm_src (same direction as T_tgt_frm_src)
     odom_T = np.linalg.inv(target_record.c2w_global) @ source_record.c2w_global
     max_dt_odom = gate_cfg.get("max_delta_t_from_odom", 50.0)
     max_dr_odom = gate_cfg.get("max_delta_r_deg_from_odom", 90.0)
-    dt_odom = float(np.linalg.norm((T_refined @ np.linalg.inv(odom_T))[:3, 3]))
-    dr_odom = _rot_error_deg(T_refined, odom_T)
+    dt_odom = float(np.linalg.norm((T_tgt_frm_src @ np.linalg.inv(odom_T))[:3, 3]))
+    dr_odom = _rot_error_deg(T_tgt_frm_src, odom_T)
     edge.verification_metrics["delta_t_from_odom"] = dt_odom
     edge.verification_metrics["delta_r_deg_from_odom"] = dr_odom
 
@@ -487,7 +501,9 @@ def refine_keyframe_loop_edge(
         edge.rejection_reason = f"depth_rmse_{depth_verified_pair.depth_rmse:.4f}_gt_{max_depth_rmse}"
         return edge
 
-    edge.T_source_to_target = T_refined
+    # Convert T_tgt_frm_src → T_src_frm_tgt for edge convention consistency.
+    # T_source_from_target = inv(c2w_src) @ c2w_tgt = inv(T_tgt_frm_src)
+    edge.T_source_from_target = np.linalg.inv(T_tgt_frm_src)
     edge.information = np.eye(6) * float(
         np.clip(depth_verified_pair.depth_inlier_ratio * 100, 10, 200)
     )
@@ -514,6 +530,7 @@ class KeyframePoseGraph:
     num_temporal_edges: int = 0
     num_handoff_edges: int = 0
     num_loop_edges: int = 0
+    num_skipped_duplicate_edges: int = 0
 
 
 # ---- Edge builders ----
@@ -524,18 +541,21 @@ def _build_temporal_edges(
 ) -> List[KeyframeEdge]:
     """Build temporal edges between consecutive keyframes ordered by frame_idx.
 
-    T_source_to_target = inv(c2w_source) @ c2w_target.
+    T_source_from_target = inv(c2w_source) @ c2w_target.
     """
     edges = []
     for i in range(len(nodes_sorted) - 1):
         src = nodes_sorted[i]
         tgt = nodes_sorted[i + 1]
-        T_st = np.linalg.inv(src.c2w_original) @ tgt.c2w_original
+        T_sf_t = np.linalg.inv(src.c2w_original) @ tgt.c2w_original
+        # TODO(Stage-7): Verify O3D's 6-DoF info matrix ordering.
+        # np.eye(6) assumes [r0,r1,r2,t0,t1,t2] ordering in the tangent space.
+        # If O3D uses [t0,t1,t2,r0,r1,r2], rotation/translation weights are swapped.
         info = np.eye(6) * odom_info_scale
         edges.append(KeyframeEdge(
             source_keyframe_id=src.keyframe_id,
             target_keyframe_id=tgt.keyframe_id,
-            T_source_to_target=T_st,
+            T_source_from_target=T_sf_t,
             edge_type="temporal",
             information=info,
             diagnostics={"submap_id": src.submap_id},
@@ -557,12 +577,12 @@ def _build_handoff_edges(
         src = nodes_sorted[i]
         tgt = nodes_sorted[i + 1]
         if src.submap_id != tgt.submap_id:
-            T_st = np.linalg.inv(src.c2w_original) @ tgt.c2w_original
+            T_sf_t = np.linalg.inv(src.c2w_original) @ tgt.c2w_original
             info = np.eye(6) * handoff_info_scale
             edges.append(KeyframeEdge(
                 source_keyframe_id=src.keyframe_id,
                 target_keyframe_id=tgt.keyframe_id,
-                T_source_to_target=T_st,
+                T_source_from_target=T_sf_t,
                 edge_type="handoff",
                 information=info,
                 diagnostics={
@@ -588,7 +608,7 @@ def _build_loop_edges(
         edges.append(KeyframeEdge(
             source_keyframe_id=vle.source_keyframe_id,
             target_keyframe_id=vle.target_keyframe_id,
-            T_source_to_target=vle.T_source_to_target,
+            T_source_from_target=vle.T_source_from_target,
             edge_type="loop",
             information=info,
             diagnostics={
@@ -647,8 +667,16 @@ def build_keyframe_pose_graph(
     handoff_scale = config.get("keyframe_pgo_handoff_info_scale", 50.0)
 
     # Build edges
-    temporal_edges = _build_temporal_edges(nodes, odom_info_scale=odom_scale)
     handoff_edges = _build_handoff_edges(nodes, handoff_info_scale=handoff_scale)
+    # Handoff edges already cover submap-boundary adjacent pairs.
+    # Skip temporal edge for the same (src, tgt) to avoid double-weighting odometry.
+    handoff_pairs = {(e.source_keyframe_id, e.target_keyframe_id) for e in handoff_edges}
+    temporal_edges_all = _build_temporal_edges(nodes, odom_info_scale=odom_scale)
+    temporal_edges = [
+        e for e in temporal_edges_all
+        if (e.source_keyframe_id, e.target_keyframe_id) not in handoff_pairs
+    ]
+    num_skipped_duplicate = len(temporal_edges_all) - len(temporal_edges)
     loop_edges = _build_loop_edges(verified_loop_edges)
 
     all_edges = temporal_edges + handoff_edges + loop_edges
@@ -659,6 +687,7 @@ def build_keyframe_pose_graph(
         num_temporal_edges=len(temporal_edges),
         num_handoff_edges=len(handoff_edges),
         num_loop_edges=len(loop_edges),
+        num_skipped_duplicate_edges=num_skipped_duplicate,
     )
 
 
@@ -668,7 +697,15 @@ def build_keyframe_pose_graph(
 
 
 def _compute_edge_residual(T_measured, T_expected):
-    """Compute translation and rotation residual for a single edge."""
+    """Compute translation (m) and rotation (deg) residual for a single edge.
+
+    Both T_measured and T_expected must use the same convention:
+        T = inv(c2w_src) @ c2w_tgt = T_source_from_target
+
+    delta = T_measured @ inv(T_expected)
+    t_err = |t_meas - R_meas @ R_exp^T @ t_exp|   (translation error in measured frame)
+    r_err = geodesic angle between R_meas and R_exp (degrees)
+    """
     delta = T_measured @ np.linalg.inv(T_expected)
     t_err = float(np.linalg.norm(delta[:3, 3]))
     r_err = _rot_error_deg(T_measured, T_expected)
@@ -685,9 +722,9 @@ def _compute_all_residuals(graph: KeyframePoseGraph,
         tgt_c2w = c2w_dict.get(edge.target_keyframe_id)
         if src_c2w is None or tgt_c2w is None:
             continue
-        # Expected: T_expected = inv(src) @ tgt from current estimates
+        # Expected: T_expected = inv(src_c2w) @ tgt_c2w = T_src_frm_tgt from current estimates
         T_expected = np.linalg.inv(src_c2w) @ tgt_c2w
-        t_err, r_err = _compute_edge_residual(edge.T_source_to_target, T_expected)
+        t_err, r_err = _compute_edge_residual(edge.T_source_from_target, T_expected)
         if edge.edge_type == "loop":
             loop_res.append((edge, t_err, r_err))
         elif edge.edge_type in ("temporal", "handoff"):
@@ -755,9 +792,10 @@ def run_keyframe_pgo_trial(
         ti = id_to_idx[edge.target_keyframe_id]
         info = edge.information if edge.information is not None else np.eye(6)
         is_uncertain = (edge.edge_type == "loop")
-        # O3D convention: node_target = node_source @ T_edge
-        # where T_edge = inv(pose_target) @ pose_source = inv(T_source_to_target)
-        T_o3d = np.linalg.inv(edge.T_source_to_target)
+        # O3D edge direction: verified by tests/test_pgo_direction.py.
+        # Constraint: pose_source = pose_target @ T_edge.
+        # T_edge should be T_target_from_source = inv(T_source_from_target).
+        T_o3d = np.linalg.inv(edge.T_source_from_target)
         o3d_graph.edges.append(
             o3d.pipelines.registration.PoseGraphEdge(
                 si, ti,
@@ -891,31 +929,89 @@ def evaluate_keyframe_pgo_result(
             )
             return result
 
-    # ---- Gate 4: Single edge residual check + robust pruning ----
+    # ---- Gate 4: Single edge residual check + robust pruning (with actual retry) ----
     if graph is not None:
-        odom_after, loop_after = _compute_all_residuals(
-            graph, result.optimized_keyframe_c2w)
-        # Check for large individual loop residuals
-        bad_loops = [(e, t, r) for e, t, r in loop_after
-                     if t > max_single_loop_t or r > max_single_loop_r]
-        if bad_loops and max_retries > 0:
-            # Prune worst loop edges and retry
+        active_graph = graph
+        pruned_total = 0
+
+        for retry in range(max_retries + 1):
+            odom_after, loop_after = _compute_all_residuals(
+                active_graph, result.optimized_keyframe_c2w)
+            bad_loops = [(e, t, r) for e, t, r in loop_after
+                         if t > max_single_loop_t or r > max_single_loop_r]
+
+            if not bad_loops:
+                break  # All loop edges acceptable
+
+            if retry >= max_retries:
+                result.rejection_reason = (
+                    f"bad_loop_edges_remain_after_{max_retries}_retries"
+                )
+                return result
+
+            # Prune worst loop edges (up to 2 per retry)
             bad_loops.sort(key=lambda x: x[1] + x[2] * 0.1, reverse=True)
             pruned_ids = {(e.source_keyframe_id, e.target_keyframe_id)
                           for e, _, _ in bad_loops[:2]}
-            filtered_edges = [e for e in graph.edges
-                              if (e.source_keyframe_id, e.target_keyframe_id) not in pruned_ids
-                              or e.edge_type != "loop"]
-            filtered_loop_edges = len([e for e in graph.edges if e.edge_type == "loop"]) - len(
-                [p for p in pruned_ids if p in {
-                    (e.source_keyframe_id, e.target_keyframe_id)
-                    for e in graph.edges if e.edge_type == "loop"}])
+            filtered_edges = [
+                e for e in active_graph.edges
+                if not (e.edge_type == "loop" and
+                        (e.source_keyframe_id, e.target_keyframe_id) in pruned_ids)
+            ]
+            new_loop_count = sum(1 for e in filtered_edges if e.edge_type == "loop")
+            num_pruned_this_round = sum(1 for e in active_graph.edges
+                                        if e.edge_type == "loop" and
+                                        (e.source_keyframe_id, e.target_keyframe_id) in pruned_ids)
+            pruned_total += num_pruned_this_round
 
-            if filtered_loop_edges < min_loop_edges:
+            if new_loop_count < min_loop_edges:
                 result.rejection_reason = (
-                    f"insufficient_loop_edges_after_pruning_{filtered_loop_edges}"
+                    f"insufficient_loop_edges_after_pruning_{new_loop_count}"
                 )
                 return result
+
+            # Rebuild graph and re-optimize with filtered edges
+            active_graph = KeyframePoseGraph(
+                nodes=list(active_graph.nodes),
+                edges=filtered_edges,
+                num_temporal_edges=sum(1 for e in filtered_edges if e.edge_type == "temporal"),
+                num_handoff_edges=sum(1 for e in filtered_edges if e.edge_type == "handoff"),
+                num_loop_edges=new_loop_count,
+            )
+            result = run_keyframe_pgo_trial(active_graph, config)
+
+            if result.rejection_reason:
+                return result
+
+            # Re-evaluate gates 1-3 on the retry result
+            if result.max_correction_t > max_corr_t:
+                result.rejection_reason = (
+                    f"retry{retry+1}_max_correction_t_{result.max_correction_t:.3f}m_gt_{max_corr_t}"
+                )
+                return result
+            if result.max_correction_r_deg > max_corr_r:
+                result.rejection_reason = (
+                    f"retry{retry+1}_max_correction_r_{result.max_correction_r_deg:.1f}deg_gt_{max_corr_r}"
+                )
+                return result
+
+            if result.odom_residual_before_mean > 1e-8:
+                ratio = result.odom_residual_after_mean / result.odom_residual_before_mean
+                if ratio > max_odom_ratio:
+                    result.rejection_reason = (
+                        f"retry{retry+1}_odom_increase_{ratio:.2f}_gt_{max_odom_ratio}"
+                    )
+                    return result
+
+            if result.loop_residual_before_mean > 1e-4:
+                ratio = result.loop_residual_after_mean / (result.loop_residual_before_mean + 1e-8)
+                if ratio > (1.0 - min_loop_decrease):
+                    result.rejection_reason = (
+                        f"retry{retry+1}_loop_not_decreased_{ratio:.2f}"
+                    )
+                    return result
+
+            # Loop continues to check Gate 4 again on the new result
 
     # ---- Accepted ----
     result.accepted = True
@@ -1085,6 +1181,7 @@ def apply_keyframe_corrections_to_gaussians(
     result: Optional[KeyframePGOResult] = None,
     keyframe_db: Optional[Dict[int, KeyframeRecord]] = None,
     owner_keyframe_ids: Optional[np.ndarray] = None,
+    gaussian_submap_ids: Optional[np.ndarray] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> np.ndarray:
     """Apply keyframe PGO corrections to Gaussian xyz positions.
@@ -1092,7 +1189,8 @@ def apply_keyframe_corrections_to_gaussians(
     Supports three modes:
       - none: return xyz unchanged.
       - submap_median_from_keyframes: compute per-submap median correction
-        and apply to all Gaussians in that submap.
+        and apply to all Gaussians in that submap. Requires gaussian_submap_ids
+        for multi-submap scenes; falls back to global correction for single submap.
       - owner_keyframe: each Gaussian gets its owner keyframe's correction.
 
     Args:
@@ -1100,6 +1198,7 @@ def apply_keyframe_corrections_to_gaussians(
         result: Accepted KeyframePGOResult.
         keyframe_db: Keyframe database for submap/owner lookup.
         owner_keyframe_ids: (N,) int array mapping each Gaussian to its owner KF.
+        gaussian_submap_ids: (N,) int array mapping each Gaussian to its submap.
         config: MapCorrection config dict.
 
     Returns:
@@ -1120,21 +1219,31 @@ def apply_keyframe_corrections_to_gaussians(
 
     if mode == "submap_median_from_keyframes" and keyframe_db is not None:
         submap_deltas = aggregate_submap_corrections(result, keyframe_db)
-        # Build frame_idx → submap_id mapping
-        kf_to_submap = {rec.keyframe_id: rec.submap_id
-                        for rec in keyframe_db.values()}
+
+        if len(submap_deltas) == 0:
+            return corrected
+
+        if len(submap_deltas) == 1 and gaussian_submap_ids is None:
+            # Single submap: apply globally (backward compatible)
+            sid, deltas = next(iter(submap_deltas.items()))
+            T = compute_submap_median_correction(deltas)
+            R, t = T[:3, :3], T[:3, 3]
+            corrected = (corrected @ R.T) + t
+            return corrected
+
+        # Multi-submap: requires per-Gaussian submap IDs
+        if gaussian_submap_ids is None:
+            return corrected  # can't disambiguate, return uncorrected
 
         for sid, deltas in submap_deltas.items():
             if len(deltas) == 0:
                 continue
+            mask = gaussian_submap_ids == sid
+            if mask.sum() == 0:
+                continue
             T = compute_submap_median_correction(deltas)
             R, t = T[:3, :3], T[:3, 3]
-            # Apply to all Gaussians in this submap (requires submap membership info)
-            # Without per-Gaussian submap IDs, apply globally if single submap
-            # or skip if we can't determine per-Gaussian submap.
-            if len(submap_deltas) == 1:
-                corrected = (corrected @ R.T) + t
-            # else: TODO — need per-Gaussian submap_id for multi-submap case
+            corrected[mask] = (corrected[mask] @ R.T) + t
         return corrected
 
     if mode == "owner_keyframe" and owner_keyframe_ids is not None:
@@ -1153,3 +1262,69 @@ def apply_keyframe_corrections_to_gaussians(
         corrected = (corrected @ R.T) + t
 
     return corrected
+
+
+# ============================================================================
+# 9. Debug Logging
+# ============================================================================
+
+
+def log_pgo_summary(graph, result, config=None):
+    """Print comprehensive PGO debug summary (guarded by keyframe_pgo_debug_log).
+
+    Args:
+        graph: KeyframePoseGraph used for optimization.
+        result: KeyframePGOResult after evaluation.
+        config: LoopClosure config dict.
+    """
+    if config is None:
+        return
+    if not config.get("keyframe_pgo_debug_log", False):
+        return
+
+    # Correction stats (filter out non-array entries from keyframe_corrections)
+    corrections_t = [
+        np.linalg.norm(c[:3, 3]) for c in result.keyframe_corrections.values()
+        if isinstance(c, np.ndarray) and c.shape == (4, 4)
+    ]
+    corrections_r = [
+        _rot_error_deg(
+            np.vstack([np.hstack([c[:3, :3], np.zeros((3, 1))]),
+                       np.array([[0, 0, 0, 1]])]),
+            np.eye(4),
+        )
+        for c in result.keyframe_corrections.values()
+        if isinstance(c, np.ndarray) and c.shape == (4, 4)
+    ]
+
+    lines = ["=" * 60,
+             "PGO DEBUG SUMMARY",
+             "=" * 60,
+             f"Nodes: {len(graph.nodes)}",
+             f"Edges: {graph.num_temporal_edges}T + {graph.num_handoff_edges}H + "
+             f"{graph.num_loop_edges}L"
+             f" (skipped {getattr(graph, 'num_skipped_duplicate_edges', 0)} dup)",
+             "-" * 40,
+             "Residuals BEFORE:",
+             f"  Odom mean t={result.odom_residual_before_mean:.4f}",
+             f"  Loop mean t={result.loop_residual_before_mean:.4f}",
+             "Residuals AFTER:",
+             f"  Odom mean t={result.odom_residual_after_mean:.4f}",
+             f"  Loop mean t={result.loop_residual_after_mean:.4f}",
+             "-" * 40]
+    if corrections_t:
+        lines.append(f"Corr t: mean={np.mean(corrections_t):.4f}m "
+                     f"max={np.max(corrections_t):.4f}m "
+                     f"med={np.median(corrections_t):.4f}m")
+    if corrections_r:
+        lines.append(f"Corr r: mean={np.mean(corrections_r):.2f}deg "
+                     f"max={np.max(corrections_r):.2f}deg "
+                     f"med={np.median(corrections_r):.2f}deg")
+    lines.append("-" * 40)
+    lines.append(f"Result: {'ACCEPTED' if result.accepted else 'REJECTED'}")
+    if result.rejection_reason:
+        lines.append(f"Reason: {result.rejection_reason}")
+    lines.append("=" * 60)
+
+    for line in lines:
+        print(f"[PGO] {line}")

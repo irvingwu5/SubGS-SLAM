@@ -1,0 +1,28 @@
+# Round B: VO Init. + Gaussian Refinement — VO 提供初值直接初始化位姿 + 渲染精化，无候选选择 (fr3_office)
+inherit_from: "configs/rgbd/tum/fr3_office.yaml"
+
+Ablation:
+  use_fft_mask: False
+  use_submap: False
+  use_loop_closure: False
+  use_fdn: False
+  use_error_mask: False
+  use_color_refinement: True
+
+VOPrior:
+  type: simple_rgbd_odom
+  candidate_selection_enable: false
+  vo_render_gate_enable: false
+  tracking_refine_iters: 60
+  tracking_fallback_iters: 120
+  vo_candidate_interval: 1
+  full_render_warmup_frames: 0
+  debug_log: false
+
+Training:
+  use_rskm: False
+  use_freq_sampling_density: false
+  use_rgb_error_mask: false
+
+Backend:
+  optimize_keyframe_pose: true
