@@ -1,4 +1,4 @@
-
+#python scripts/plot_psnr_trajectory.py --save_dir tum_results/tum_rgbd_dataset_freiburg3_long_office_household/2026-05-24-22-36-43_rskm       --label "RSKM"       --save_dir tum_results/tum_rgbd_dataset_freiburg3_long_office_household/2026-05-24-17-51-49_par_rskm       --label "PAR-RSKM"       --split
 """Plot camera trajectory overlaid with per-frame PSNR (color) and replay count (radius).
 
 Single mode:

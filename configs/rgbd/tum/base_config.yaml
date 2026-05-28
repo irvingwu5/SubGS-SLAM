@@ -149,6 +149,15 @@ VOPrior:
   submap_cut_gate_enable: true           # 是否启用子图切换质量门控
   submap_cut_min_opacity: 0.05           # 子图切换最低不透明度覆盖率
   submap_cut_max_delay: 3                # 最大延迟切图帧数
+
+  # Tracking Init Mode (ablation experiment)
+  # null = backward compatible (use candidate_selection_enable logic)
+  # "prev_only" | "cv_only" | "vo_only" | "multi"
+  tracking_init_mode: null
+
+  # Post-arbitration quality check
+  init_err_ratio: 2.0
+
 #如果关掉 VOPrior.type: none，底层 SimpleRGBDOdom 就不会被初始化，SimpleRGBDOdom.enable 也就无关了。
 # ============================================================
 # Simple-RGBD-Odometry Configuration (external VO prior)

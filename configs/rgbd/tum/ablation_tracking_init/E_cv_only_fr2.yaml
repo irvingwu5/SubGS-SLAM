@@ -1,0 +1,29 @@
+# E: cv_only — 仅恒速模型作为 tracking 初值 (fr2_xyz)
+inherit_from: "configs/rgbd/tum/fr2_xyz.yaml"
+
+Ablation:
+  use_fft_mask: False
+  use_submap: False
+  use_loop_closure: False
+  use_fdn: False
+  use_error_mask: False
+  use_color_refinement: True
+
+VOPrior:
+  type: none
+  candidate_selection_enable: false
+  vo_render_gate_enable: false
+  tracking_refine_iters: 60
+  tracking_fallback_iters: 120
+  full_render_warmup_frames: 0
+  debug_log: false
+  tracking_init_mode: cv_only
+
+Training:
+  use_rskm: True
+  rskm_mode: par
+  use_freq_sampling_density: false
+  use_rgb_error_mask: false
+
+Backend:
+  optimize_keyframe_pose: true

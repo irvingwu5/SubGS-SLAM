@@ -210,6 +210,11 @@ class SLAM:
 
         # ---- Run Frontend (blocking) ----
         self.frontend.run()
+
+        # ---- Export tracking ablation statistics ----
+        if hasattr(self.frontend, 'export_tracking_stats') and self.save_dir is not None:
+            self.frontend.export_tracking_stats(self.save_dir)
+
         backend_queue.put(["pause"])
 
         end.record()

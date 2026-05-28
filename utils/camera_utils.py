@@ -72,7 +72,7 @@ class Camera(nn.Module):
         )
 
         # ---- PAR RSKM metadata (plain attrs, survive pickle) ----
-        self.vo_init_c2w = None             # np.ndarray (4,4) float64, C2W from VO prior
+        self.init_c2w = None             # np.ndarray (4,4) float64, C2W actually used as tracking init
         self.render_opt_c2w = None          # np.ndarray (4,4) float64, C2W after tracking
         self.par_pose_trans_error = None    # float, VO vs render translation error (m)
         self.par_pose_rot_error_deg = None  # float, VO vs render rotation error (deg)

@@ -1,5 +1,5 @@
-# C: 2DGS Base + VO + RSKM — VO direct init + vanilla RSKM replay (fr3_office)
-inherit_from: "configs/rgbd/tum/fr3_office.yaml"
+# F: vo_only — 仅 RGB-D odometry 作为 tracking 初值 (fr2_xyz)
+inherit_from: "configs/rgbd/tum/fr2_xyz.yaml"
 
 Ablation:
   use_fft_mask: False
@@ -11,19 +11,20 @@ Ablation:
 
 VOPrior:
   type: simple_rgbd_odom
-  candidate_selection_enable: true #false->true
-  vo_render_gate_enable: true #false->true
-  tracking_refine_iters: 50
+  candidate_selection_enable: false
+  vo_render_gate_enable: false
+  tracking_refine_iters: 60
   tracking_fallback_iters: 120
   full_render_warmup_frames: 0
   debug_log: false
+  tracking_init_mode: vo_only
+  vo_candidate_interval: 1
 
 Training:
   use_rskm: True
-  rskm_mode: vanilla
+  rskm_mode: par
   use_freq_sampling_density: false
   use_rgb_error_mask: false
-  mapping_itr_num: 80             # 每关键帧 mapping 迭代次数，100-300
 
 Backend:
   optimize_keyframe_pose: true

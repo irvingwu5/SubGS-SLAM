@@ -1,0 +1,166 @@
+========== E: cv_only ==========
+FVO-GS-SLAM: Running FVO-GS-SLAM in Evaluation Mode
+FVO-GS-SLAM: Following config will be overriden
+FVO-GS-SLAM:    save_results=True
+FVO-GS-SLAM:    use_gui=False
+FVO-GS-SLAM:    eval_rendering=True
+FVO-GS-SLAM:    use_wandb=False
+FVO-GS-SLAM: saving results in tum_results/tum_rgbd_dataset_freiburg3_long_office_household/2026-05-28-00-32-50
+FVO-GS-SLAM: [Seed] seed_info saved to tum_results/tum_rgbd_dataset_freiburg3_long_office_household/2026-05-28-00-32-50/seed_info.json
+FVO-GS-SLAM: [Seed] base_seed=42, deterministic=False
+FVO-GS-SLAM: [Seed] frontend_seed=42
+FVO-GS-SLAM: [Seed] backend_seed=43
+FVO-GS-SLAM: [Seed] loop_seed=44
+FVO-GS-SLAM: [Seed] cudnn.deterministic=False, cudnn.benchmark=True
+FVO-GS-SLAM: Started tracking physical GPU 1 memory...
+FVO-GS-SLAM: [Inheritance] enable=False, keep_percent=0.45
+FVO-GS-SLAM: [RAP2DGS-Lite] enable=False, use_in_inheritance=False
+FVO-GS-SLAM: [BackendPosePolicy] optimize_keyframe_pose=True, optimize_keyframe_exposure=False, pose_sanity_check=False
+FVO-GS-SLAM: [PAR-RSKM] mode=par beta=5.0 gamma=1.0 tau_r=0.05 temporal_bins=True debug_log=False save_stats=False
+FVO-GS-SLAM: [Ablation] Loop Closure Process is DISABLED.
+FVO-GS-SLAM: [Seed] backend_seed=43
+FVO-GS-SLAM: Resetting the system
+FVO-GS-SLAM: [SA Config] use_sa=True use_sa_depth=True use_sa_dist=True lambda_dist=0.005
+FVO-GS-SLAM: Initialized map
+FVO-GS-SLAM: Resetting the opacity of non-visible Gaussians
+FVO-GS-SLAM: Evaluating ATE at frame:  142
+Eval: RMSE ATE [m] 0.004415652790820512
+FVO-GS-SLAM: Evaluating ATE at frame:  184
+Eval: RMSE ATE [m] 0.004263728277175076
+FVO-GS-SLAM: Evaluating ATE at frame:  228
+Eval: RMSE ATE [m] 0.004745997292312048
+FVO-GS-SLAM: Evaluating ATE at frame:  280
+Eval: RMSE ATE [m] 0.005000417474846411
+FVO-GS-SLAM: Evaluating ATE at frame:  336
+Eval: RMSE ATE [m] 0.00554410976953407
+FVO-GS-SLAM: Resetting the opacity of non-visible Gaussians
+FVO-GS-SLAM: Evaluating ATE at frame:  379
+Eval: RMSE ATE [m] 0.007158483815760282
+FVO-GS-SLAM: Evaluating ATE at frame:  420
+Eval: RMSE ATE [m] 0.008861387487139409
+FVO-GS-SLAM: Evaluating ATE at frame:  487
+Eval: RMSE ATE [m] 0.010331245044384103
+FVO-GS-SLAM: Evaluating ATE at frame:  545
+Eval: RMSE ATE [m] 0.011633635342822793
+FVO-GS-SLAM: Evaluating ATE at frame:  596
+Eval: RMSE ATE [m] 0.012861490364990825
+FVO-GS-SLAM: Evaluating ATE at frame:  634
+Eval: RMSE ATE [m] 0.013899613989083777
+FVO-GS-SLAM: Evaluating ATE at frame:  668
+Eval: RMSE ATE [m] 0.013798655127945625
+FVO-GS-SLAM: Evaluating ATE at frame:  696
+Eval: RMSE ATE [m] 0.013810426760310864
+FVO-GS-SLAM: Evaluating ATE at frame:  759
+Eval: RMSE ATE [m] 0.013653134673895348
+FVO-GS-SLAM: Evaluating ATE at frame:  804
+Eval: RMSE ATE [m] 0.013573681573576947
+FVO-GS-SLAM: Evaluating ATE at frame:  851
+Eval: RMSE ATE [m] 0.013287031551540207
+FVO-GS-SLAM: Resetting the opacity of non-visible Gaussians
+FVO-GS-SLAM: Evaluating ATE at frame:  904
+Eval: RMSE ATE [m] 0.01324746796884411
+FVO-GS-SLAM: Evaluating ATE at frame:  941
+Eval: RMSE ATE [m] 0.013228874578197271
+FVO-GS-SLAM: Evaluating ATE at frame:  988
+Eval: RMSE ATE [m] 0.01309094493181073
+FVO-GS-SLAM: Evaluating ATE at frame:  1022
+Eval: RMSE ATE [m] 0.012898036102567643
+FVO-GS-SLAM: Evaluating ATE at frame:  1083
+Eval: RMSE ATE [m] 0.012828738200225093
+FVO-GS-SLAM: Evaluating ATE at frame:  1131
+Eval: RMSE ATE [m] 0.013459769940613141
+FVO-GS-SLAM: Evaluating ATE at frame:  1181
+Eval: RMSE ATE [m] 0.013961510713995096
+FVO-GS-SLAM: Evaluating ATE at frame:  1222
+Eval: RMSE ATE [m] 0.014156079265687646
+FVO-GS-SLAM: Evaluating ATE at frame:  1269
+Eval: RMSE ATE [m] 0.014082184335219941
+FVO-GS-SLAM: Resetting the opacity of non-visible Gaussians
+FVO-GS-SLAM: Evaluating ATE at frame:  1317
+Eval: RMSE ATE [m] 0.013927828925888931
+FVO-GS-SLAM: Evaluating ATE at frame:  1359
+Eval: RMSE ATE [m] 0.014120875585937165
+FVO-GS-SLAM: Evaluating ATE at frame:  1395
+Eval: RMSE ATE [m] 0.015085221552148033
+FVO-GS-SLAM: Evaluating ATE at frame:  1431
+Eval: RMSE ATE [m] 0.016933189305283192
+FVO-GS-SLAM: Evaluating ATE at frame:  1475
+Eval: RMSE ATE [m] 0.020047430569711092
+FVO-GS-SLAM: Evaluating ATE at frame:  1527
+Eval: RMSE ATE [m] 0.024653902772270714
+FVO-GS-SLAM: Evaluating ATE at frame:  1589
+Eval: RMSE ATE [m] 0.029904116576336334
+FVO-GS-SLAM: Evaluating ATE at frame:  1642
+Eval: RMSE ATE [m] 0.03486402327031719
+FVO-GS-SLAM: Evaluating ATE at frame:  1694
+Eval: RMSE ATE [m] 0.039450750332404284
+FVO-GS-SLAM: Evaluating ATE at frame:  1755
+Eval: RMSE ATE [m] 0.043588870113391465
+FVO-GS-SLAM: Resetting the opacity of non-visible Gaussians
+FVO-GS-SLAM: Evaluating ATE at frame:  1809
+Eval: RMSE ATE [m] 0.0464859527645598
+FVO-GS-SLAM: Evaluating ATE at frame:  1855
+Eval: RMSE ATE [m] 0.04874917682984152
+FVO-GS-SLAM: Evaluating ATE at frame:  1893
+Eval: RMSE ATE [m] 0.05043241417366213
+FVO-GS-SLAM: Evaluating ATE at frame:  1924
+Eval: RMSE ATE [m] 0.05191222357969709
+FVO-GS-SLAM: Evaluating ATE at frame:  1959
+Eval: RMSE ATE [m] 0.05397156105312628
+FVO-GS-SLAM: Evaluating ATE at frame:  1995
+Eval: RMSE ATE [m] 0.05730881532245406
+FVO-GS-SLAM: Evaluating ATE at frame:  2024
+Eval: RMSE ATE [m] 0.06233109266986249
+FVO-GS-SLAM: Evaluating ATE at frame:  2087
+Eval: RMSE ATE [m] 0.0661853076343103
+FVO-GS-SLAM: Resetting the opacity of non-visible Gaussians
+FVO-GS-SLAM: Evaluating ATE at frame:  2147
+Eval: RMSE ATE [m] 0.07136775146753345
+FVO-GS-SLAM: Evaluating ATE at frame:  2196
+Eval: RMSE ATE [m] 0.0798197820291141
+FVO-GS-SLAM: Evaluating ATE at frame:  2240
+Eval: RMSE ATE [m] 0.09030912329276623
+[W CudaIPCTypes.cpp:95] Producer process tried to deallocate over 1000 memory blocks referred by consumer processes. Deallocation might be significantly slowed down. We assume it will never going to be the case, but if it is, please file but to https://github.com/pytorch/pytorch
+FVO-GS-SLAM: Evaluating ATE at frame:  2388
+Eval: RMSE ATE [m] 0.10163598214094019
+FVO-GS-SLAM: Evaluating ATE at frame:  2444
+Eval: RMSE ATE [m] 0.1070497592357066
+FVO-GS-SLAM: [TrackingStats] Per-frame data (2514 frames) saved to tum_results/tum_rgbd_dataset_freiburg3_long_office_household/2026-05-28-00-32-50/per_frame_tracking.json
+FVO-GS-SLAM: [TrackingStats] Avg time: 900.10 ms, Avg iters: 60.38, Avg loss: 0.039129
+Eval: Total time 2371.3105
+Eval: Total FPS 1.0605949748040167
+FVO-GS-SLAM: 等待后端清理显存并安全退出 (防死锁抽干机制启动)...
+FVO-GS-SLAM: Saved RSKM replay counts (244 KFs) to tum_results/tum_rgbd_dataset_freiburg3_long_office_household/2026-05-28-00-32-50/rskm_replay_counts.json
+FVO-GS-SLAM: ==> 终局保存：最后一块子图 0 已存入硬盘。 <==
+[W CudaIPCTypes.cpp:15] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]
+FVO-GS-SLAM: Backend stopped and saved final submap.
+FVO-GS-SLAM: Loop Closure is disabled, skipping PGO finalize.
+[W CudaIPCTypes.cpp:95] Producer process tried to deallocate over 1000 memory blocks referred by consumer processes. Deallocation might be significantly slowed down. We assume it will never going to be the case, but if it is, please file but to https://github.com/pytorch/pytorch
+FVO-GS-SLAM: ==> 开启流式合并模式，正在拉取硬盘子图数据... <==
+Streaming Submap Concatenation:   0%|                                                                                                                                        | 0/1 [00:00<?, ?it/s]FVO-GS-SLAM: [Fusion] submap 0: 79804 Gaussians
+Streaming Submap Concatenation: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:00<00:00, 304.77it/s]
+FVO-GS-SLAM: ==> 所有子图已离线变换完毕，正在构建全局高斯模型... <==
+FVO-GS-SLAM: Concatenating submap parameters on CPU...
+FVO-GS-SLAM: ==> 开始拉扯前端相机轨迹... <==
+Correcting Trajectory: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2515/2515 [00:00<00:00, 3432.05it/s]
+FVO-GS-SLAM: ==> 拼接完成！全局高斯点总数: 79804 <==
+FVO-GS-SLAM: Evaluating Tracking ATE (With PGO Correction if enabled)...
+Eval: RMSE ATE [m] 0.10930588984390831
+TrackingStats: Track Time avg: 900.10 ms, Iteration Count avg: 60.38
+FVO-GS-SLAM: ==> 已释放前端相机的映射相关张量，准备进入离线优化阶段... <==
+FVO-GS-SLAM: ==> 开始离线优化 | Color Refinement: True <==
+Offline Color Refinement: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 26000/26000 [09:24<00:00, 46.07it/s]
+FVO-GS-SLAM: ==> Map refinement done <==
+FVO-GS-SLAM: Rendering FINAL Map Quality (After Color Refinement)...
+/home/wuxiangyu/anaconda3/envs/fvo-gs-slam/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/wuxiangyu/anaconda3/envs/fvo-gs-slam/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=AlexNet_Weights.IMAGENET1K_V1`. You can also use `weights=AlexNet_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+Eval: Rendering and saving all sampled frames for TSDF Fusion...
+Eval: NVS psnr: 23.4869, ssim: 0.8020, lpips: 0.2738 | ALL depth_l1: 0.2090m
+Eval: Saved per-frame PSNR (503 frames) and trajectory for visualization
+Eval: Algorithm Allocated Peak: 5323.66 MB
+Eval: System Physical Peak (Paper Metric): 6982.00 MB
+Eval: Final Map Size: 4.87 MB
+FVO-GS-SLAM: Done.
+

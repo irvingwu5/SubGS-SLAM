@@ -289,6 +289,23 @@ def eval_rendering(
             w2c = frames[fid].T.cpu().numpy()
             all_positions.append([fid, w2c[0, 3], w2c[1, 3]])  # frame_id, X, Y
         np.savetxt(os.path.join(psnr_save_dir, "trajectory_xy.txt"), np.array(all_positions), fmt=["%d", "%.6f", "%.6f"])
+        # Save per-frame ATE error for trajectory line coloring
+        est_poses, gt_poses = [], []
+        for fid in sorted_fids:
+            frame = frames[fid]
+            if hasattr(frame, 'T_gt') and frame.T_gt is not None:
+                est_poses.append(np.linalg.inv(frame.T.cpu().numpy()))
+                gt_poses.append(np.linalg.inv(frame.T_gt.cpu().numpy()))
+        if len(est_poses) > 1:
+            traj_est = PosePath3D(poses_se3=est_poses)
+            traj_gt = PosePath3D(poses_se3=gt_poses)
+            traj_est_aligned = trajectory.align_trajectory(traj_est, traj_gt)
+            errors = []
+            for i in range(len(est_poses)):
+                t_est = traj_est_aligned.poses_se3[i][:3, 3]
+                t_gt = gt_poses[i][:3, 3]
+                errors.append(np.linalg.norm(t_est - t_gt))
+            np.savetxt(os.path.join(psnr_save_dir, "trajectory_error.txt"), np.array(errors), fmt="%.6f")
         Log(f"Saved per-frame PSNR ({len(all_psnr_array)} frames) and trajectory for visualization", tag="Eval")
 
     return output

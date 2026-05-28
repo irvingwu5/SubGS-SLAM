@@ -1,0 +1,120 @@
+============================================
+  fr1_desk  
+============================================
+========== fr1_desk D: prev_only ==========
+FVO-GS-SLAM: Running FVO-GS-SLAM in Evaluation Mode
+FVO-GS-SLAM: Following config will be overriden
+FVO-GS-SLAM:    save_results=True
+FVO-GS-SLAM:    use_gui=False
+FVO-GS-SLAM:    eval_rendering=True
+FVO-GS-SLAM:    use_wandb=False
+FVO-GS-SLAM: saving results in tum_results/tum_room_desk/2026-05-27-23-40-38
+FVO-GS-SLAM: [Seed] seed_info saved to tum_results/tum_room_desk/2026-05-27-23-40-38/seed_info.json
+FVO-GS-SLAM: [Seed] base_seed=42, deterministic=False
+FVO-GS-SLAM: [Seed] frontend_seed=42
+FVO-GS-SLAM: [Seed] backend_seed=43
+FVO-GS-SLAM: [Seed] loop_seed=44
+FVO-GS-SLAM: [Seed] cudnn.deterministic=False, cudnn.benchmark=True
+FVO-GS-SLAM: Started tracking physical GPU 0 memory...
+FVO-GS-SLAM: [Inheritance] enable=False, keep_percent=0.45
+FVO-GS-SLAM: [RAP2DGS-Lite] enable=False, use_in_inheritance=False
+FVO-GS-SLAM: [BackendPosePolicy] optimize_keyframe_pose=True, optimize_keyframe_exposure=False, pose_sanity_check=False
+FVO-GS-SLAM: [PAR-RSKM] mode=par beta=5.0 gamma=1.0 tau_r=0.05 temporal_bins=True debug_log=False save_stats=False
+FVO-GS-SLAM: [Ablation] Loop Closure Process is DISABLED.
+FVO-GS-SLAM: [Seed] backend_seed=43
+FVO-GS-SLAM: Resetting the system
+FVO-GS-SLAM: [SA Config] use_sa=True use_sa_depth=True use_sa_dist=True lambda_dist=0.005
+FVO-GS-SLAM: Initialized map
+FVO-GS-SLAM: Evaluating ATE at frame:  24
+Eval: RMSE ATE [m] 0.007069295275249272
+FVO-GS-SLAM: Evaluating ATE at frame:  52
+Eval: RMSE ATE [m] 0.013868546852255305
+FVO-GS-SLAM: Evaluating ATE at frame:  76
+Eval: RMSE ATE [m] 0.019012773591444668
+FVO-GS-SLAM: Resetting the opacity of non-visible Gaussians
+FVO-GS-SLAM: Evaluating ATE at frame:  100
+Eval: RMSE ATE [m] 0.023363748043401786
+FVO-GS-SLAM: Evaluating ATE at frame:  120
+Eval: RMSE ATE [m] 0.02219043671837285
+FVO-GS-SLAM: Evaluating ATE at frame:  142
+Eval: RMSE ATE [m] 0.021360007606872088
+FVO-GS-SLAM: Evaluating ATE at frame:  160
+Eval: RMSE ATE [m] 0.021177260504864855
+FVO-GS-SLAM: Evaluating ATE at frame:  177
+Eval: RMSE ATE [m] 0.022589635195935865
+FVO-GS-SLAM: Evaluating ATE at frame:  195
+Eval: RMSE ATE [m] 0.023015888878093107
+FVO-GS-SLAM: Evaluating ATE at frame:  213
+Eval: RMSE ATE [m] 0.022391928438666192
+FVO-GS-SLAM: Evaluating ATE at frame:  235
+Eval: RMSE ATE [m] 0.021629239522774943
+FVO-GS-SLAM: Evaluating ATE at frame:  261
+Eval: RMSE ATE [m] 0.02127971372809075
+FVO-GS-SLAM: Evaluating ATE at frame:  280
+Eval: RMSE ATE [m] 0.021026144013502314
+FVO-GS-SLAM: Evaluating ATE at frame:  295
+Eval: RMSE ATE [m] 0.02325438782926078
+FVO-GS-SLAM: Evaluating ATE at frame:  310
+Eval: RMSE ATE [m] 0.02259356867407767
+FVO-GS-SLAM: Resetting the opacity of non-visible Gaussians
+FVO-GS-SLAM: Evaluating ATE at frame:  325
+Eval: RMSE ATE [m] 0.021982029499118608
+FVO-GS-SLAM: Evaluating ATE at frame:  349
+Eval: RMSE ATE [m] 0.02186752104094529
+FVO-GS-SLAM: Evaluating ATE at frame:  367
+Eval: RMSE ATE [m] 0.022000370611642808
+FVO-GS-SLAM: Evaluating ATE at frame:  382
+Eval: RMSE ATE [m] 0.022169441736007336
+FVO-GS-SLAM: Evaluating ATE at frame:  399
+Eval: RMSE ATE [m] 0.02224523916286136
+FVO-GS-SLAM: Evaluating ATE at frame:  424
+Eval: RMSE ATE [m] 0.022071338798243696
+FVO-GS-SLAM: Evaluating ATE at frame:  450
+Eval: RMSE ATE [m] 0.02205973158520344
+FVO-GS-SLAM: Evaluating ATE at frame:  474
+Eval: RMSE ATE [m] 0.02180585933781659
+FVO-GS-SLAM: Evaluating ATE at frame:  497
+Eval: RMSE ATE [m] 0.021513463821839083
+FVO-GS-SLAM: Evaluating ATE at frame:  512
+Eval: RMSE ATE [m] 0.021317377338742487
+FVO-GS-SLAM: Evaluating ATE at frame:  529
+Eval: RMSE ATE [m] 0.02110127497147818
+FVO-GS-SLAM: Evaluating ATE at frame:  564
+Eval: RMSE ATE [m] 0.02091571048073432
+FVO-GS-SLAM: [TrackingStats] Per-frame data (591 frames) saved to tum_results/tum_room_desk/2026-05-27-23-40-38/per_frame_tracking.json
+FVO-GS-SLAM: [TrackingStats] Avg time: 1199.56 ms, Avg iters: 82.31, Avg loss: 0.030821
+Eval: Total time 759.9008125
+Eval: Total FPS 0.7790490420090187
+FVO-GS-SLAM: 等待后端清理显存并安全退出 (防死锁抽干机制启动)...
+FVO-GS-SLAM: Saved RSKM replay counts (136 KFs) to tum_results/tum_room_desk/2026-05-27-23-40-38/rskm_replay_counts.json
+FVO-GS-SLAM: ==> 终局保存：最后一块子图 0 已存入硬盘。 <==
+[W CudaIPCTypes.cpp:15] Producer process has been terminated before all shared CUDA tensors released. See Note [Sharing CUDA tensors]
+FVO-GS-SLAM: Backend stopped and saved final submap.
+FVO-GS-SLAM: Loop Closure is disabled, skipping PGO finalize.
+FVO-GS-SLAM: ==> 开启流式合并模式，正在拉取硬盘子图数据... <==
+Streaming Submap Concatenation:   0%|                                                                                                                                        | 0/1 [00:00<?, ?it/s]FVO-GS-SLAM: [Fusion] submap 0: 48556 Gaussians
+Streaming Submap Concatenation: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:00<00:00, 288.25it/s]
+FVO-GS-SLAM: ==> 所有子图已离线变换完毕，正在构建全局高斯模型... <==
+FVO-GS-SLAM: Concatenating submap parameters on CPU...
+FVO-GS-SLAM: ==> 开始拉扯前端相机轨迹... <==
+Correcting Trajectory: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 592/592 [00:00<00:00, 2031.49it/s]
+FVO-GS-SLAM: ==> 拼接完成！全局高斯点总数: 48556 <==
+FVO-GS-SLAM: Evaluating Tracking ATE (With PGO Correction if enabled)...
+Eval: RMSE ATE [m] 0.020873586773783533
+TrackingStats: Track Time avg: 1199.56 ms, Iteration Count avg: 82.31
+FVO-GS-SLAM: ==> 已释放前端相机的映射相关张量，准备进入离线优化阶段... <==
+FVO-GS-SLAM: ==> 开始离线优化 | Color Refinement: True <==
+Offline Color Refinement: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 26000/26000 [05:16<00:00, 82.21it/s]
+FVO-GS-SLAM: ==> Map refinement done <==
+FVO-GS-SLAM: Rendering FINAL Map Quality (After Color Refinement)...
+/home/wuxiangyu/anaconda3/envs/fvo-gs-slam/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/wuxiangyu/anaconda3/envs/fvo-gs-slam/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=AlexNet_Weights.IMAGENET1K_V1`. You can also use `weights=AlexNet_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+Eval: Rendering and saving all sampled frames for TSDF Fusion...
+Eval: NVS psnr: 23.9925, ssim: 0.8295, lpips: 0.2021 | ALL depth_l1: 0.0586m
+Eval: Saved per-frame PSNR (119 frames) and trajectory for visualization
+Eval: Algorithm Allocated Peak: 3536.99 MB
+Eval: System Physical Peak (Paper Metric): 4362.00 MB
+Eval: Final Map Size: 2.96 MB
+FVO-GS-SLAM: Done.

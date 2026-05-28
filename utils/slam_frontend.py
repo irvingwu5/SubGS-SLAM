@@ -85,6 +85,16 @@ class FrontEnd(mp.Process):
         self.candidate_min_opacity_ratio = float(vop_cfg.get("candidate_min_opacity_ratio", 0.05))
         self.last_c2ws = []  # up to 2 recent frame C2Ws for constant velocity prediction
 
+        # Tracking Init Mode (ablation experiment)
+        self.tracking_init_mode = vop_cfg.get("tracking_init_mode", None)
+        _valid_modes = ("prev_only", "cv_only", "vo_only", "multi")
+        if self.tracking_init_mode is not None and self.tracking_init_mode not in _valid_modes:
+            raise ValueError(
+                f"tracking_init_mode must be one of {_valid_modes}, "
+                f"got '{self.tracking_init_mode}'")
+        self.uniform_refine_iters = (self.tracking_init_mode is not None)
+        self.per_frame_tracking = []  # per-frame tracking stats for ablation
+
         # Stage 3: VO render gate for dynamic refinement
         self.vo_render_gate_enable = vop_cfg.get("vo_render_gate_enable", False)
         self.vo_max_score_ratio_to_best = float(vop_cfg.get("vo_max_score_ratio_to_best", 1.25))
@@ -101,6 +111,12 @@ class FrontEnd(mp.Process):
         self.last_tracking_diag = {}
         self.track_times = []  # per-frame tracking time (ms)
         self.track_iter_counts = []  # per-frame actual iteration count
+
+        # ---- Post-arbitration quality check ----
+        self.init_err_ratio = float(vop_cfg.get("init_err_ratio", 2.0))
+        self.recent_init_color_losses = []  # sliding window, max 50
+        self.recent_init_depth_losses = []  # sliding window, max 50
+        self._max_loss_window = 50
 
     # ========================================================================
     # 2. VO Prior helpers
@@ -174,10 +190,10 @@ class FrontEnd(mp.Process):
 
         No gradients, no optimizer step, no Gaussian updates.
         Returns dict with l1_rgb, l1_depth, opacity_ratio.
+        Uses alpha^3 soft weighting + depth outlier filtering.
         """
         with torch.no_grad():
             orig_T = viewpoint.T.clone()
-            # Set candidate pose (C2W → W2C)
             viewpoint.T = torch.from_numpy(np.linalg.inv(c2w)).float().cuda()
             viewpoint.cam_rot_delta.data.fill_(0)
             viewpoint.cam_trans_delta.data.fill_(0)
@@ -185,32 +201,51 @@ class FrontEnd(mp.Process):
             render_pkg = render(
                 viewpoint, self._get_render_model(), self.pipeline_params,
                 self.background, surf=False)
-            image = render_pkg["render"]
-            depth = render_pkg["depth"]
-            opacity = render_pkg["opacity"]
+            image = render_pkg["render"]       # [3, H, W]
+            depth = render_pkg["depth"]        # [1, H, W]
+            opacity = render_pkg["opacity"]    # [1, H, W]
 
-            # Color loss (L1, opacity-weighted, matches get_loss_tracking_rgb)
             gt_image = viewpoint.original_image.cuda()
             _, h, w = gt_image.shape
             rgb_boundary_threshold = self.config["Training"]["rgb_boundary_threshold"]
-            rgb_pixel_mask = (gt_image.sum(dim=0) > rgb_boundary_threshold).view(1, h, w)
-            rgb_pixel_mask = rgb_pixel_mask * viewpoint.grad_mask
-            l1_rgb = (opacity * torch.abs(image * rgb_pixel_mask - gt_image * rgb_pixel_mask)).mean().item()
+            alpha_soft = opacity ** 3  # [1, H, W]
 
-            # Depth loss (L1, opacity-masked valid depth pixels)
+            # ---- Color loss (L1, alpha^3 weighted) ----
+            rgb_pixel_mask = (gt_image.sum(dim=0) > rgb_boundary_threshold).view(1, h, w)
+            rgb_pixel_mask = rgb_pixel_mask * viewpoint.grad_mask  # [1, H, W]
+            rgb_diff = torch.abs(image - gt_image)  # [3, H, W]
+            weighted_rgb = (alpha_soft * rgb_pixel_mask.float() * rgb_diff).sum()
+            weight_rgb = (alpha_soft * rgb_pixel_mask.float()).sum()
+            if weight_rgb > 0:
+                l1_rgb = weighted_rgb.item() / weight_rgb.item()
+            else:
+                l1_rgb = float("inf")
+
+            # ---- Depth loss (L1, alpha^3 weighted + outlier filter) ----
             gt_depth = torch.from_numpy(viewpoint.depth).to(
                 dtype=torch.float32, device=image.device)[None]
-            depth_pixel_mask = (gt_depth > 0.01).view(*depth.shape)
-            opacity_mask = (opacity > 0.95).view(*depth.shape)
-            depth_mask = depth_pixel_mask * opacity_mask
-            n_valid = depth_mask.sum()
-            if n_valid > 0:
-                l1_depth = (torch.abs(depth * depth_mask - gt_depth * depth_mask).sum() / n_valid).item()
+            depth_valid = gt_depth > 0.01
+            depth_diff = torch.abs(depth - gt_depth)
+
+            # Depth outlier filter
+            d_valid_flat = depth_valid.reshape(-1)
+            d_diff_flat = depth_diff.reshape(-1)
+            if d_valid_flat.any():
+                median_err = d_diff_flat[d_valid_flat].median()
+                outlier_mask = (depth_diff < 50.0 * median_err) if median_err > 0 else torch.ones_like(depth_diff, dtype=torch.bool)
+            else:
+                outlier_mask = torch.ones_like(depth_diff, dtype=torch.bool)
+
+            depth_mask = (depth_valid & outlier_mask).float()
+            weighted_depth = (alpha_soft * depth_mask * depth_diff).sum()
+            weight_depth = (alpha_soft * depth_mask).sum()
+            if weight_depth > 0:
+                l1_depth = weighted_depth.item() / weight_depth.item()
             else:
                 l1_depth = float("inf")
 
-            # Opacity coverage
-            opacity_ratio = opacity_mask.float().mean().item()
+            # Opacity coverage (for rejection gate, not score)
+            opacity_ratio = (opacity > 0.95).float().mean().item()
 
             # Restore original pose
             viewpoint.T = orig_T
@@ -220,7 +255,8 @@ class FrontEnd(mp.Process):
     def _select_candidate(self, candidates, viewpoint):
         """Select best candidate by render precheck score.
 
-        Returns the winning candidate dict with added "metrics" and "score" fields.
+        Returns the winning candidate dict with added "metrics", "score",
+        and "quality_triggered" fields.
         Falls back to "previous" if all candidates fail precheck.
         """
         best_cand = None
@@ -241,10 +277,9 @@ class FrontEnd(mp.Process):
                         f"rgb={metrics['l1_rgb']:.4f}, depth={metrics['l1_depth']:.4f}")
                 continue
 
-            # Score: combined weighted loss
+            # Score: L1 RGB + lambda_depth * L1 depth (no coverage penalty)
             score = (metrics["l1_rgb"]
-                     + self.candidate_lambda_depth * metrics["l1_depth"]
-                     + self.candidate_lambda_coverage * max(0, self.candidate_min_opacity_ratio - metrics["opacity_ratio"]))
+                     + self.candidate_lambda_depth * metrics["l1_depth"])
             cand["score"] = score
 
             if score < best_score:
@@ -256,7 +291,111 @@ class FrontEnd(mp.Process):
             best_cand = candidates[0]
             best_cand["fallback"] = True
 
+        # ---- Post-arbitration quality check ----
+        best_cand["quality_triggered"] = False
+        best_metrics = best_cand.get("metrics", {})
+        init_rgb = best_metrics.get("l1_rgb", float("inf"))
+        init_depth = best_metrics.get("l1_depth", float("inf"))
+
+        # Update sliding windows
+        if init_rgb < float("inf"):
+            self.recent_init_color_losses.append(init_rgb)
+            if len(self.recent_init_color_losses) > self._max_loss_window:
+                self.recent_init_color_losses.pop(0)
+        if init_depth < float("inf"):
+            self.recent_init_depth_losses.append(init_depth)
+            if len(self.recent_init_depth_losses) > self._max_loss_window:
+                self.recent_init_depth_losses.pop(0)
+
+        # Check if selected candidate's loss is anomalously high
+        if len(self.recent_init_color_losses) >= 10:
+            median_color = float(np.median(self.recent_init_color_losses))
+            median_depth = float(np.median(self.recent_init_depth_losses))
+            if (median_color > 0 and init_rgb > self.init_err_ratio * median_color) or (
+                median_depth > 0 and init_depth > self.init_err_ratio * median_depth):
+                best_cand["quality_triggered"] = True
+                if self.debug_log:
+                    Log(f"[QualityCheck] triggered: init_rgb={init_rgb:.4f} > "
+                        f"{self.init_err_ratio}*median={median_color:.4f}, "
+                        f"init_depth={init_depth:.4f}")
+
         return best_cand
+
+    def _check_single_init_quality(self, viewpoint):
+        """Post-init quality check for single-source modes.
+
+        Renders once at the init pose, compares loss vs history.
+        Uses alpha^3 soft weighting + depth outlier filtering.
+        Returns True if quality check triggered.
+        """
+        if self.gaussians is None:
+            return False
+        with torch.no_grad():
+            render_pkg = render(
+                viewpoint, self._get_render_model(), self.pipeline_params,
+                self.background, surf=False)
+            image = render_pkg["render"]       # [3, H, W]
+            depth = render_pkg["depth"]        # [1, H, W]
+            opacity = render_pkg["opacity"]    # [1, H, W]
+
+            gt_image = viewpoint.original_image.cuda()
+            _, h, w = gt_image.shape
+            alpha_soft = opacity ** 3  # [1, H, W]
+
+            # ---- Color loss (alpha^3 weighted) ----
+            rgb_boundary_threshold = self.config["Training"]["rgb_boundary_threshold"]
+            rgb_pixel_mask = (gt_image.sum(dim=0) > rgb_boundary_threshold).view(1, h, w)
+            rgb_pixel_mask = rgb_pixel_mask * viewpoint.grad_mask
+            rgb_diff = torch.abs(image - gt_image)
+            weighted_rgb = (alpha_soft * rgb_pixel_mask.float() * rgb_diff).sum()
+            weight_rgb = (alpha_soft * rgb_pixel_mask.float()).sum()
+            if weight_rgb > 0:
+                init_rgb = weighted_rgb.item() / weight_rgb.item()
+            else:
+                return False
+
+            # ---- Depth loss (alpha^3 weighted + outlier filter) ----
+            gt_depth = torch.from_numpy(viewpoint.depth).to(
+                dtype=torch.float32, device=image.device)[None]
+            depth_valid = gt_depth > 0.01
+            depth_diff = torch.abs(depth - gt_depth)
+            d_valid_flat = depth_valid.reshape(-1)
+            d_diff_flat = depth_diff.reshape(-1)
+            if d_valid_flat.any():
+                median_err = d_diff_flat[d_valid_flat].median()
+                outlier_mask = (depth_diff < 50.0 * median_err) if median_err > 0 else torch.ones_like(depth_diff, dtype=torch.bool)
+            else:
+                outlier_mask = torch.ones_like(depth_diff, dtype=torch.bool)
+
+            depth_mask = (depth_valid & outlier_mask).float()
+            weighted_depth = (alpha_soft * depth_mask * depth_diff).sum()
+            weight_depth = (alpha_soft * depth_mask).sum()
+            if weight_depth > 0:
+                init_depth = weighted_depth.item() / weight_depth.item()
+            else:
+                init_depth = float("inf")
+
+        # Update sliding windows
+        self.recent_init_color_losses.append(init_rgb)
+        if len(self.recent_init_color_losses) > self._max_loss_window:
+            self.recent_init_color_losses.pop(0)
+        self.recent_init_depth_losses.append(init_depth)
+        if len(self.recent_init_depth_losses) > self._max_loss_window:
+            self.recent_init_depth_losses.pop(0)
+
+        # Check anomaly
+        if len(self.recent_init_color_losses) >= 10:
+            median_color = float(np.median(self.recent_init_color_losses))
+            median_depth = float(np.median(self.recent_init_depth_losses))
+            triggered = (
+                (median_color > 0 and init_rgb > self.init_err_ratio * median_color) or
+                (median_depth > 0 and init_depth > self.init_err_ratio * median_depth)
+            )
+            if triggered and self.debug_log:
+                Log(f"[QualityCheck] single-source triggered: "
+                    f"init_rgb={init_rgb:.4f}, init_depth={init_depth:.4f}")
+            return triggered
+        return False
 
     # ========================================================================
     # 3. Hyperparameters
@@ -382,20 +521,25 @@ class FrontEnd(mp.Process):
         vo_success = False
         est_c2w = None
         vo_info = {}
-        if self.vo_prior_type == "simple_rgbd_odom":
+        _run_vo = (self.vo_prior_type == "simple_rgbd_odom"
+                   and self.tracking_init_mode in ("vo_only", "multi", None))
+        if _run_vo:
             self._init_vo_prior()
             rgb_img = self._camera_rgb(viewpoint)
             depth_np = viewpoint.depth
-            # TUM depth is in meters after /depth_scale in dataset; upstream expects meters
             init_c2w = (torch.linalg.inv(prev_cam.T).cpu().numpy().astype(np.float64)
                         if prev_cam is not None else None)
             vo_success, est_c2w, vo_info = self.vo_prior.track(rgb_img, depth_np, init_c2w)
 
             # Suppress VO candidate during warmup or when interval says skip
-            skip_candidate = in_warmup or (
-                self.vo_candidate_interval > 1
-                and (cur_frame_idx % self.vo_candidate_interval) != 0
-            )
+            # vo_only mode: no interval skip (always attempt VO)
+            if self.tracking_init_mode == "vo_only":
+                skip_candidate = in_warmup
+            else:
+                skip_candidate = in_warmup or (
+                    self.vo_candidate_interval > 1
+                    and (cur_frame_idx % self.vo_candidate_interval) != 0
+                )
             if skip_candidate:
                 vo_success = False
             else:
@@ -418,74 +562,197 @@ class FrontEnd(mp.Process):
                     f"motion_t={vo_trans:.4f}m, rot={vo_rot:.1f}deg, "
                     f"reason={vo_info.get('reason', '?')}")
 
-        # ---- Step 2: Pose initialization (candidate selection / fallback) ---
+        # ---- Step 2: Pose initialization (mode-based) -----------------------
         vo_render_accepted = False
         vo_reject_reason = None
         selected_candidate_name = None
+        candidates = []  # populated in multi mode for per-frame stats
 
-        if self.candidate_selection_enable and self.gaussians is not None:
-            candidates = self._build_candidates(prev_cam, vo_success, est_c2w)
-            if candidates:
-                selected = self._select_candidate(candidates, viewpoint)
-                if selected is not None:
-                    viewpoint.T = torch.from_numpy(np.linalg.inv(selected["c2w"])).float().cuda()
-                    selected_candidate_name = selected.get("name")
-                    if self.debug_log:
-                        names = [f"{c['name']}(s={self._format_score(c.get('score'))})" for c in candidates]
-                        Log(f"[Candidate] frame {cur_frame_idx}: {', '.join(names)} → "
-                            f"selected={selected_candidate_name}")
+        if self.tracking_init_mode == "multi":
+            # === Multi-candidate mode (render precheck arbitration) ===
+            if self.gaussians is not None:
+                candidates = self._build_candidates(prev_cam, vo_success, est_c2w)
+                if candidates:
+                    selected = self._select_candidate(candidates, viewpoint)
+                    if selected is not None:
+                        viewpoint.T = torch.from_numpy(np.linalg.inv(selected["c2w"])).float().cuda()
+                        selected_candidate_name = selected.get("name")
+                        if self.debug_log:
+                            names = [f"{c['name']}(s={self._format_score(c.get('score'))})" for c in candidates]
+                            Log(f"[Candidate] frame {cur_frame_idx}: {', '.join(names)} → "
+                                f"selected={selected_candidate_name}")
 
-                    # Stage 3: VO render acceptance gate
-                    if self.vo_render_gate_enable:
-                        vo_cand = next((c for c in candidates if c["name"] == "external_vo"), None)
-                        if vo_cand is not None and not vo_cand.get("rejected", False):
-                            vo_metrics = vo_cand.get("metrics", {})
-                            vo_score = vo_cand.get("score", float("inf"))
-                            vo_l1_rgb = vo_metrics.get("l1_rgb", float("inf"))
-                            vo_l1_depth = vo_metrics.get("l1_depth", float("inf"))
-                            vo_opacity = vo_metrics.get("opacity_ratio", 0)
-                            best_score = selected.get("score", float("inf")) if selected else float("inf")
+                        # Stage 3: VO render acceptance gate
+                        if self.vo_render_gate_enable:
+                            vo_cand = next((c for c in candidates if c["name"] == "external_vo"), None)
+                            if vo_cand is not None and not vo_cand.get("rejected", False):
+                                vo_metrics = vo_cand.get("metrics", {})
+                                vo_score = vo_cand.get("score", float("inf"))
+                                vo_l1_rgb = vo_metrics.get("l1_rgb", float("inf"))
+                                vo_l1_depth = vo_metrics.get("l1_depth", float("inf"))
+                                vo_opacity = vo_metrics.get("opacity_ratio", 0)
+                                best_score = selected.get("score", float("inf")) if selected else float("inf")
 
-                            if self.vo_max_color_loss is not None and vo_l1_rgb > self.vo_max_color_loss:
-                                vo_reject_reason = f"color_loss {vo_l1_rgb:.4f} > {self.vo_max_color_loss}"
-                            elif self.vo_max_depth_loss is not None and vo_l1_depth > self.vo_max_depth_loss:
-                                vo_reject_reason = f"depth_loss {vo_l1_depth:.4f} > {self.vo_max_depth_loss}"
-                            elif vo_opacity < self.vo_min_opacity_ratio:
-                                vo_reject_reason = f"opacity_ratio {vo_opacity:.4f} < {self.vo_min_opacity_ratio}"
-                            elif (best_score > 0 and vo_score / best_score > self.vo_max_score_ratio_to_best):
-                                vo_reject_reason = f"score_ratio {vo_score/best_score:.2f} > {self.vo_max_score_ratio_to_best}"
-                            else:
-                                vo_render_accepted = True
+                                if self.vo_max_color_loss is not None and vo_l1_rgb > self.vo_max_color_loss:
+                                    vo_reject_reason = f"color_loss {vo_l1_rgb:.4f} > {self.vo_max_color_loss}"
+                                elif self.vo_max_depth_loss is not None and vo_l1_depth > self.vo_max_depth_loss:
+                                    vo_reject_reason = f"depth_loss {vo_l1_depth:.4f} > {self.vo_max_depth_loss}"
+                                elif vo_opacity < self.vo_min_opacity_ratio:
+                                    vo_reject_reason = f"opacity_ratio {vo_opacity:.4f} < {self.vo_min_opacity_ratio}"
+                                elif (best_score > 0 and vo_score / best_score > self.vo_max_score_ratio_to_best):
+                                    vo_reject_reason = f"score_ratio {vo_score/best_score:.2f} > {self.vo_max_score_ratio_to_best}"
+                                else:
+                                    vo_render_accepted = True
 
-                            if not vo_render_accepted and self.debug_log:
-                                Log(f"[VO Gate] frame {cur_frame_idx}: VO render REJECTED ({vo_reject_reason})")
-                    elif not self.vo_render_gate_enable:
-                        vo_render_accepted = (selected_candidate_name == "external_vo")
-            elif prev_cam is not None:
-                viewpoint.T = prev_cam.T.clone()
-        else:
-            # Direct VO pose application (no candidate rendering overhead)
-            if vo_success and est_c2w is not None:
-                viewpoint.T = torch.from_numpy(np.linalg.inv(est_c2w)).float().cuda()
-                selected_candidate_name = "external_vo"
+                                if not vo_render_accepted and self.debug_log:
+                                    Log(f"[VO Gate] frame {cur_frame_idx}: VO render REJECTED ({vo_reject_reason})")
+                        elif not self.vo_render_gate_enable:
+                            vo_render_accepted = (selected_candidate_name == "external_vo")
+                elif prev_cam is not None:
+                    viewpoint.T = prev_cam.T.clone()
+                    selected_candidate_name = "previous"
             elif prev_cam is not None:
                 viewpoint.T = prev_cam.T.clone()
                 selected_candidate_name = "previous"
 
+        elif self.tracking_init_mode == "vo_only":
+            # === VO-only mode: use VO directly as init for render refinement ===
+            if vo_success and est_c2w is not None:
+                viewpoint.T = torch.from_numpy(np.linalg.inv(est_c2w)).float().cuda()
+                selected_candidate_name = "external_vo"
+                vo_render_accepted = vo_success
+            elif prev_cam is not None:
+                viewpoint.T = prev_cam.T.clone()
+                selected_candidate_name = "previous"
+                vo_render_accepted = False
+
+        elif self.tracking_init_mode == "cv_only":
+            # === Constant-velocity mode ===
+            cv_c2w = None
+            if len(self.last_c2ws) >= 2:
+                rel = np.linalg.inv(self.last_c2ws[0]) @ self.last_c2ws[1]
+                cv_c2w = self.last_c2ws[1] @ rel
+            if cv_c2w is not None:
+                viewpoint.T = torch.from_numpy(np.linalg.inv(cv_c2w)).float().cuda()
+                selected_candidate_name = "constant_velocity"
+            elif prev_cam is not None:
+                viewpoint.T = prev_cam.T.clone()
+                selected_candidate_name = "previous"
+
+        elif self.tracking_init_mode == "prev_only":
+            # === Previous-only mode ===
+            if prev_cam is not None:
+                viewpoint.T = prev_cam.T.clone()
+                selected_candidate_name = "previous"
+
+        else:
+            # === Backward compat: original candidate_selection_enable logic ===
+            if self.candidate_selection_enable and self.gaussians is not None:
+                candidates = self._build_candidates(prev_cam, vo_success, est_c2w)
+                if candidates:
+                    selected = self._select_candidate(candidates, viewpoint)
+                    if selected is not None:
+                        viewpoint.T = torch.from_numpy(np.linalg.inv(selected["c2w"])).float().cuda()
+                        selected_candidate_name = selected.get("name")
+                        if self.debug_log:
+                            names = [f"{c['name']}(s={self._format_score(c.get('score'))})" for c in candidates]
+                            Log(f"[Candidate] frame {cur_frame_idx}: {', '.join(names)} → "
+                                f"selected={selected_candidate_name}")
+
+                        # Stage 3: VO render acceptance gate
+                        if self.vo_render_gate_enable:
+                            vo_cand = next((c for c in candidates if c["name"] == "external_vo"), None)
+                            if vo_cand is not None and not vo_cand.get("rejected", False):
+                                vo_metrics = vo_cand.get("metrics", {})
+                                vo_score = vo_cand.get("score", float("inf"))
+                                vo_l1_rgb = vo_metrics.get("l1_rgb", float("inf"))
+                                vo_l1_depth = vo_metrics.get("l1_depth", float("inf"))
+                                vo_opacity = vo_metrics.get("opacity_ratio", 0)
+                                best_score = selected.get("score", float("inf")) if selected else float("inf")
+
+                                if self.vo_max_color_loss is not None and vo_l1_rgb > self.vo_max_color_loss:
+                                    vo_reject_reason = f"color_loss {vo_l1_rgb:.4f} > {self.vo_max_color_loss}"
+                                elif self.vo_max_depth_loss is not None and vo_l1_depth > self.vo_max_depth_loss:
+                                    vo_reject_reason = f"depth_loss {vo_l1_depth:.4f} > {self.vo_max_depth_loss}"
+                                elif vo_opacity < self.vo_min_opacity_ratio:
+                                    vo_reject_reason = f"opacity_ratio {vo_opacity:.4f} < {self.vo_min_opacity_ratio}"
+                                elif (best_score > 0 and vo_score / best_score > self.vo_max_score_ratio_to_best):
+                                    vo_reject_reason = f"score_ratio {vo_score/best_score:.2f} > {self.vo_max_score_ratio_to_best}"
+                                else:
+                                    vo_render_accepted = True
+
+                                if not vo_render_accepted and self.debug_log:
+                                    Log(f"[VO Gate] frame {cur_frame_idx}: VO render REJECTED ({vo_reject_reason})")
+                        elif not self.vo_render_gate_enable:
+                            vo_render_accepted = (selected_candidate_name == "external_vo")
+                elif prev_cam is not None:
+                    viewpoint.T = prev_cam.T.clone()
+                    selected_candidate_name = "previous"
+            else:
+                if vo_success and est_c2w is not None:
+                    viewpoint.T = torch.from_numpy(np.linalg.inv(est_c2w)).float().cuda()
+                    selected_candidate_name = "external_vo"
+                elif prev_cam is not None:
+                    viewpoint.T = prev_cam.T.clone()
+                    selected_candidate_name = "previous"
+
+        # Save actual init pose used for this frame (PAR-RSKM reliability)
+        with torch.no_grad():
+            viewpoint.init_c2w = (
+                torch.linalg.inv(viewpoint.T).cpu().numpy().astype(np.float64)
+            )
+
         # ---- Step 3: Refinement iteration count --------------------------
-        if in_warmup:
-            refine_iters = self.tracking_itr_num
-        elif self.candidate_selection_enable and (self.vo_prior_type != "none"):
-            if vo_render_accepted:
+        if self.uniform_refine_iters:
+            # vo_only VO 成功 / multi VO 被选中 → 60, 其余 → 100
+            if (self.tracking_init_mode == "vo_only" and vo_success) or (
+                self.tracking_init_mode == "multi" and selected_candidate_name == "external_vo"):
                 refine_iters = self.tracking_refine_iters
             else:
-                refine_iters = self.tracking_fallback_iters
-        elif self.vo_prior_type != "none":
-            refine_iters = (self.tracking_refine_iters if vo_success
-                            else self.tracking_fallback_iters)
+                refine_iters = self.tracking_itr_num
         else:
-            refine_iters = self.tracking_itr_num
+            # Backward compat: dynamic refine iters
+            if in_warmup:
+                refine_iters = self.tracking_itr_num
+            elif self.candidate_selection_enable and (self.vo_prior_type != "none"):
+                if vo_render_accepted:
+                    refine_iters = self.tracking_refine_iters
+                else:
+                    refine_iters = self.tracking_fallback_iters
+            elif self.vo_prior_type != "none":
+                refine_iters = (self.tracking_refine_iters if vo_success
+                                else self.tracking_fallback_iters)
+            else:
+                refine_iters = self.tracking_itr_num
         refine_iters = max(refine_iters, 5)
+
+        # ---- Post-arbitration: double iters if quality check triggered ----
+        quality_triggered = False
+        if (self.tracking_init_mode == "multi" or (
+            self.tracking_init_mode is None and self.candidate_selection_enable)):
+            if candidates:
+                selected = next((c for c in candidates
+                                 if c.get("name") == selected_candidate_name), None)
+                if selected and selected.get("quality_triggered"):
+                    quality_triggered = True
+                    refine_iters *= 2
+                    if self.debug_log:
+                        Log(f"[QualityCheck] frame {cur_frame_idx}: "
+                            f"iters doubled to {refine_iters}")
+        elif self.tracking_init_mode in ("prev_only", "cv_only", "vo_only"):
+            # Single-source modes: render at init pose to check quality
+            quality_triggered = self._check_single_init_quality(viewpoint)
+            if quality_triggered:
+                refine_iters *= 2
+                if self.tracking_init_mode == "cv_only":
+                    # cv_only: fallback to previous when CV prediction is bad
+                    prev_cam = self.cameras.get(cur_frame_idx - 1)
+                    if prev_cam is not None:
+                        viewpoint.T = prev_cam.T.clone()
+                        selected_candidate_name = "previous"
+                        if self.debug_log:
+                            Log(f"[QualityCheck] cv_only fallback to previous, "
+                                f"iters={refine_iters}")
 
         # ---- Step 4: Render refinement ------------------------------------
         viewpoint.fixed_pose = False
@@ -552,8 +819,9 @@ class FrontEnd(mp.Process):
             best_render_pkg["depth"], best_render_pkg["opacity"]
         )
 
-        # Update constant velocity cache
-        if self.candidate_selection_enable:
+        # Update constant velocity cache for modes that need it
+        if self.tracking_init_mode in ("cv_only", "multi") or (
+            self.tracking_init_mode is None and self.candidate_selection_enable):
             current_c2w = torch.linalg.inv(viewpoint.T).cpu().numpy().astype(np.float64)
             self.last_c2ws.append(current_c2w)
             if len(self.last_c2ws) > 2:
@@ -573,16 +841,15 @@ class FrontEnd(mp.Process):
         if self.config.get("Training", {}).get("rskm_mode", "vanilla") == "par":
             from utils.par_rskm import compute_pose_delta_metrics
 
-            viewpoint.vo_init_c2w = est_c2w  # from VOPrior (None if VO failed)
             with torch.no_grad():
                 viewpoint.render_opt_c2w = (
                     torch.linalg.inv(viewpoint.T).cpu().numpy().astype(np.float64)
                 )
             viewpoint.par_tracking_loss = best_loss
 
-            # Compute pose consistency (VO init vs render refined)
+            # Compute pose consistency (actual init vs render refined)
             trans_err, rot_err = compute_pose_delta_metrics(
-                viewpoint.vo_init_c2w, viewpoint.render_opt_c2w
+                viewpoint.init_c2w, viewpoint.render_opt_c2w
             )
             viewpoint.par_pose_trans_error = trans_err
             viewpoint.par_pose_rot_error_deg = rot_err
@@ -600,6 +867,38 @@ class FrontEnd(mp.Process):
         actual_iters = tracking_itr + 1
         self.track_times.append(dt_ms)
         self.track_iter_counts.append(actual_iters)
+
+        # ---- Per-frame tracking record (ablation analysis) ----
+        if self.uniform_refine_iters:
+            frame_record = {
+                "frame_id": cur_frame_idx,
+                "init_mode": self.tracking_init_mode,
+                "selected_candidate": selected_candidate_name,
+                "track_time_ms": round(dt_ms, 3),
+                "refine_iters": actual_iters,
+                "quality_triggered": quality_triggered,
+                "final_loss": round(best_loss, 6) if best_loss < float("inf") else None,
+            }
+
+            if self.tracking_init_mode == "multi":
+                cand_details = {}
+                for cand in candidates:
+                    metrics = cand.get("metrics", {})
+                    cand_details[cand["name"]] = {
+                        "valid": cand.get("valid", True),
+                        "l1_rgb": round(metrics.get("l1_rgb", float("inf")), 6),
+                        "l1_depth": round(metrics.get("l1_depth", float("inf")), 6),
+                        "opacity_ratio": round(metrics.get("opacity_ratio", 0.0), 6),
+                        "score": round(cand.get("score", float("inf")), 6) if cand.get("score") is not None else None,
+                        "rejected": cand.get("rejected", False),
+                        "selected": (cand["name"] == selected_candidate_name),
+                    }
+                frame_record["candidates"] = cand_details
+
+            if self.tracking_init_mode == "vo_only":
+                frame_record["vo_success"] = vo_success
+
+            self.per_frame_tracking.append(frame_record)
 
         return best_render_pkg if best_render_pkg is not None else render_pkg
 
@@ -991,6 +1290,78 @@ class FrontEnd(mp.Process):
         Log(f"Track Time avg: {avg_time:.2f} ms, Iteration Count avg: {avg_iter:.2f}",
             tag="TrackingStats")
         return avg_time, avg_iter
+
+    def export_tracking_stats(self, save_dir):
+        """Export per-frame tracking statistics for ablation analysis.
+
+        Saves:
+          - per_frame_tracking.json: per-frame records (mode-specific fields)
+          - candidate_selection_summary.json: aggregate stats (multi mode only)
+        """
+        import json
+
+        if not self.per_frame_tracking:
+            return
+
+        # ---- Per-frame tracking data ----
+        tracking_path = os.path.join(save_dir, "per_frame_tracking.json")
+        with open(tracking_path, "w") as f:
+            json.dump(self.per_frame_tracking, f, indent=2)
+        Log(f"[TrackingStats] Per-frame data ({len(self.per_frame_tracking)} frames) "
+            f"saved to {tracking_path}")
+
+        # ---- Average timing/iter stats ----
+        times = [r["track_time_ms"] for r in self.per_frame_tracking]
+        iters = [r["refine_iters"] for r in self.per_frame_tracking]
+        losses = [r["final_loss"] for r in self.per_frame_tracking
+                  if r["final_loss"] is not None]
+        if losses:
+            Log(f"[TrackingStats] Avg time: {np.mean(times):.2f} ms, "
+                f"Avg iters: {np.mean(iters):.2f}, "
+                f"Avg loss: {np.mean(losses):.6f}")
+
+        # ---- Candidate selection summary (multi mode) ----
+        if self.tracking_init_mode == "multi":
+            from collections import defaultdict
+            sel_counts = defaultdict(int)
+            score_sums = defaultdict(float)
+            score_counts = defaultdict(int)
+            total_frames = 0
+
+            for record in self.per_frame_tracking:
+                total_frames += 1
+                sel = record.get("selected_candidate", "unknown")
+                sel_counts[sel] += 1
+                for name, detail in record.get("candidates", {}).items():
+                    s = detail.get("score")
+                    if not detail.get("rejected", False) and s is not None and s < float("inf"):
+                        score_sums[name] += s
+                        score_counts[name] += 1
+
+            summary = {
+                "total_frames": total_frames,
+                "init_mode": "multi",
+                "selection_counts": dict(sel_counts),
+                "selection_ratios": {k: round(v / total_frames, 4)
+                                     for k, v in sel_counts.items()},
+                "avg_scores": {k: round(score_sums[k] / score_counts[k], 6)
+                               if score_counts[k] > 0 else None
+                               for k in score_sums},
+            }
+            summary_path = os.path.join(save_dir, "candidate_selection_summary.json")
+            with open(summary_path, "w") as f:
+                json.dump(summary, f, indent=2)
+            Log(f"[CandidateStats] Selection ratios: {summary['selection_ratios']}")
+            Log(f"[CandidateStats] Summary saved to {summary_path}")
+
+        # ---- VO failure report (vo_only mode) ----
+        if self.tracking_init_mode == "vo_only":
+            total = len(self.per_frame_tracking)
+            failures = sum(1 for r in self.per_frame_tracking
+                           if not r.get("vo_success", False))
+            if total > 0:
+                Log(f"[VOStats] VO failure rate: {failures}/{total} = "
+                    f"{failures/total:.3f}")
 
     # ========================================================================
     # 15. Main Loop
